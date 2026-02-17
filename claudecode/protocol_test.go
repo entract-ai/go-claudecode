@@ -85,6 +85,53 @@ func TestGetEnvDurationWithDefault(t *testing.T) {
 	})
 }
 
+func TestInitialize_IncludesAgents(t *testing.T) {
+	// Verify that Initialize() includes agents in the request map.
+	// We can't easily test the full round-trip without a real CLI,
+	// but we can verify the request construction by inspecting the
+	// ControlRouter's options.
+	opts := &Options{
+		agents: map[string]AgentDefinition{
+			"analyzer": {
+				Description: "Analyzes code",
+				Prompt:      "Analyze code",
+			},
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+	assert.NotNil(t, router.options.agents)
+	assert.Contains(t, router.options.agents, "analyzer")
+}
+
+func TestHandleCanUseTool_BlockedPath(t *testing.T) {
+	// Verify that blocked_path is parsed from the request.
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_1",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Write",
+			"input": {"path": "/tmp/test"},
+			"blocked_path": "/etc/sensitive",
+			"permission_suggestions": []
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Equal(t, "/etc/sensitive", receivedCtx.BlockedPath)
+}
+
 func TestBuildHooksConfig(t *testing.T) {
 	// Suppress unused variable warning for context import
 	_ = context.Background()

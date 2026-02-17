@@ -174,7 +174,7 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "value", args[idx+1])
 	})
 
-	t.Run("with agents", func(t *testing.T) {
+	t.Run("agents are not passed as CLI args", func(t *testing.T) {
 		opts := applyOptions(
 			WithAgent("analyzer", AgentDefinition{
 				Description: "Analyzes code",
@@ -185,7 +185,95 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		args, err := transport.buildArgs()
 		require.NoError(t, err)
 
-		assert.Contains(t, args, "--agents")
+		assert.NotContains(t, args, "--agents",
+			"Agents should be sent via initialize request, not CLI args")
+	})
+
+	t.Run("with thinking enabled", func(t *testing.T) {
+		opts := applyOptions(WithThinking(ThinkingEnabled{BudgetTokens: 4096}))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--max-thinking-tokens")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "4096", args[idx+1])
+	})
+
+	t.Run("with thinking disabled", func(t *testing.T) {
+		opts := applyOptions(WithThinking(ThinkingDisabled{}))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--max-thinking-tokens")
+	})
+
+	t.Run("with thinking adaptive", func(t *testing.T) {
+		opts := applyOptions(WithThinking(ThinkingAdaptive{}))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--max-thinking-tokens")
+	})
+
+	t.Run("thinking overrides maxThinkingTokens", func(t *testing.T) {
+		opts := applyOptions(
+			WithMaxThinkingTokens(8000),
+			WithThinking(ThinkingEnabled{BudgetTokens: 2000}),
+		)
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--max-thinking-tokens")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "2000", args[idx+1])
+	})
+
+	t.Run("with effort", func(t *testing.T) {
+		opts := applyOptions(WithEffort("high"))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--effort")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "high", args[idx+1])
+	})
+
+	t.Run("with output format", func(t *testing.T) {
+		schema := map[string]any{"type": "object", "properties": map[string]any{}}
+		opts := applyOptions(WithOutputFormat(map[string]any{
+			"type":   "json_schema",
+			"schema": schema,
+		}))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.Contains(t, args, "--json-schema")
+	})
+
+	t.Run("output format overrides jsonSchemaOutput", func(t *testing.T) {
+		oldSchema := map[string]any{"old": true}
+		newSchema := map[string]any{"new": true}
+		opts := applyOptions(
+			WithJSONSchemaOutput(oldSchema),
+			WithOutputFormat(map[string]any{
+				"type":   "json_schema",
+				"schema": newSchema,
+			}),
+		)
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--json-schema")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Contains(t, args[idx+1], `"new":true`)
+		assert.NotContains(t, args[idx+1], `"old":true`)
 	})
 
 	t.Run("with include partial messages", func(t *testing.T) {

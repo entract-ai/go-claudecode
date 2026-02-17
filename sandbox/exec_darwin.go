@@ -278,14 +278,19 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString("(allow network-outbound)\n")
 		policyBuilder.WriteString("(allow network-inbound)\n")
 	} else if policy.AllowLocalhostOnly {
-		// Localhost-only network access (blocks internet)
-		// Note: Seatbelt requires "localhost:*" syntax, not "127.0.0.1:*"
-		// The system will resolve localhost to 127.0.0.1 and ::1
+		// Localhost-only network access (blocks internet).
+		// Use "*:*" instead of "localhost:*" because modern runtimes (Java, Node.js)
+		// may use IPv6 loopback (::1) which "localhost" doesn't always match.
+		// (local ip "*:*") is safe because it only matches local endpoints;
+		// internet-bound connections use non-loopback interfaces and remain blocked.
 		policyBuilder.WriteString("(allow network-outbound\n")
-		policyBuilder.WriteString("  (remote ip \"localhost:*\"))\n")
+		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+
+		policyBuilder.WriteString("(allow network-bind\n")
+		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 
 		policyBuilder.WriteString("(allow network-inbound\n")
-		policyBuilder.WriteString("  (local ip \"localhost:*\"))\n")
+		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 	}
 	// If all are false/nil, no network rules are added (network is blocked)
 

@@ -235,6 +235,39 @@ func TestSeatbeltArgs_AncestorUnlinkProtection(t *testing.T) {
 		"Ancestor directory .git should be protected from unlink")
 }
 
+func TestSeatbeltArgs_AllowLocalhostOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowLocalhostOnly = true
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Should use (local ip "*:*") patterns, not "localhost:*"
+	assert.NotContains(t, policyStr, `"localhost:*"`,
+		"AllowLocalhostOnly should not use localhost:* (misses IPv6 loopback)")
+	assert.Contains(t, policyStr, `(local ip "*:*")`,
+		"AllowLocalhostOnly should use (local ip \"*:*\") for IPv6 compatibility")
+
+	// Should have network-outbound, network-bind, and network-inbound rules
+	assert.Contains(t, policyStr, "allow network-outbound",
+		"AllowLocalhostOnly should allow outbound network")
+	assert.Contains(t, policyStr, "allow network-bind",
+		"AllowLocalhostOnly should allow network bind")
+	assert.Contains(t, policyStr, "allow network-inbound",
+		"AllowLocalhostOnly should allow inbound network")
+
+	// Should not use (remote ip ...) for outbound
+	assert.NotContains(t, policyStr, "remote ip",
+		"AllowLocalhostOnly should use (local ip) not (remote ip) for outbound")
+}
+
 func TestAncestorDirectories(t *testing.T) {
 	t.Parallel()
 
