@@ -362,6 +362,8 @@ func extractPort(addr string) string {
 // including) root. For example, ancestorDirectories("/a/b/c/d", "/a") returns
 // ["/a/b", "/a/b/c"]. The root itself is excluded because it's a writable mount
 // point and shouldn't be blocked from unlink.
+// Both path and root must be canonical (no "..", ".", or trailing slashes)
+// since termination relies on exact string comparison with root.
 func ancestorDirectories(path, root string) []string {
 	var ancestors []string
 	dir := filepath.Dir(path)
@@ -371,4 +373,3 @@ func ancestorDirectories(path, root string) []string {
 	}
 	return ancestors
 }
-

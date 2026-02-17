@@ -62,7 +62,8 @@ func validatePattern(pattern string) error {
 		return fmt.Errorf("must not contain path separators")
 	}
 
-	// Strip port if present
+	// Strip port if present. Note: IPv6 literal addresses (e.g., [::1]:443) are
+	// not supported as patterns; this only handles domain:port and IPv4:port.
 	host := pattern
 	if idx := strings.LastIndexByte(pattern, ':'); idx >= 0 {
 		host = pattern[:idx]
@@ -114,14 +115,14 @@ func validatePattern(pattern string) error {
 //	// Use proxy.Env() to configure sandboxed processes
 //	policy.NetworkProxy = proxy
 type NetworkProxy struct {
-	filter      *NetworkFilter
+	filter    *NetworkFilter
 	httpAddr  string
 	socksAddr string
 	httpLn    net.Listener
 	socksLn   net.Listener
 	closeOnce sync.Once
-	closed      chan struct{}
-	wg          sync.WaitGroup
+	closed    chan struct{}
+	wg        sync.WaitGroup
 
 	mu         sync.Mutex
 	httpServer *http.Server
@@ -240,7 +241,10 @@ func (p *NetworkProxy) Env() []string {
 		// RSYNC proxy expects host:port format without scheme
 		"RSYNC_PROXY="+socksAddr,
 
-		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy
+		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy.
+		// The -X 5 -x flags are BSD/macOS nc extensions. On Linux with GNU netcat,
+		// this will fail-closed (git SSH connections are blocked, not bypassed).
+		// Git-over-HTTPS still works via HTTP_PROXY on all platforms.
 		fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
 	)
 

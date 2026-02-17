@@ -256,4 +256,3 @@ func ensurePath(path string) error {
 	}
 	return nil
 }
-
