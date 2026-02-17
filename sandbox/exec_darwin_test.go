@@ -112,6 +112,34 @@ func TestSeatbeltArgs_DenyPathInjection(t *testing.T) {
 		"Deny paths should use parameter indirection regardless of path content")
 }
 
+func TestSeatbeltArgs_DenyAfterAllowOrdering(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	denyPath := tmpDir + "/protected"
+	require.NoError(t, os.MkdirAll(denyPath, 0o755))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.DenyWritePaths = []string{denyPath}
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Deny rules must appear after allow rules in the policy string.
+	// In Seatbelt, when a deny subpath is more specific than (nested within)
+	// an allow subpath, deny takes precedence. But if someone refactors and
+	// moves deny before allow, the more specific allow could override the deny.
+	allowIdx := strings.Index(policyStr, "allow file-write*")
+	denyIdx := strings.Index(policyStr, "deny file-write*")
+	require.Greater(t, allowIdx, -1, "Should have allow file-write* rule")
+	require.Greater(t, denyIdx, -1, "Should have deny file-write* rule")
+	assert.Greater(t, denyIdx, allowIdx,
+		"Deny rules must appear after allow rules in the Seatbelt policy")
+}
+
 func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
 	t.Parallel()
 

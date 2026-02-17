@@ -133,6 +133,11 @@ func TestDangerousWriteDenyPaths(t *testing.T) {
 
 	paths := DangerousWriteDenyPaths("/home/user/project", false)
 
+	// Verify completeness: should contain all dangerous files, directories, and git paths
+	expectedLen := len(DangerousFilesList()) + len(DangerousDirectoriesList()) + len(DangerousGitPaths(false))
+	assert.Len(t, paths, expectedLen,
+		"DangerousWriteDenyPaths should include all dangerous files, directories, and git paths")
+
 	// Should include dangerous files
 	assert.Contains(t, paths, "/home/user/project/.gitconfig")
 	assert.Contains(t, paths, "/home/user/project/.gitattributes")

@@ -322,7 +322,7 @@ func DangerousDirectoriesList() []string {
 func DangerousGitPaths(allowGitConfig bool) []string {
 	paths := []string{
 		".git/hooks",
-		".git/info", // exclude file can hide malicious files from git status
+		".git/info", // contains exclude, attributes, and grafts files that alter git behavior
 	}
 	if !allowGitConfig {
 		paths = append(paths, ".git/config")
