@@ -180,6 +180,11 @@ type Policy struct {
 	// This is required for running inside unprivileged Docker containers that lack
 	// the CAP_SYS_ADMIN capability needed to mount /proc.
 	// The default (false) mounts a fresh /proc for full PID namespace isolation.
+	//
+	// Note: When this is true and AllowSharedNamespaces is false, PID namespace
+	// isolation is still applied but /proc shows host PIDs (from the parent mount
+	// namespace). The sandbox can still not signal host processes, but they are
+	// visible in /proc. This is an accepted trade-off for Docker compatibility.
 	// Ignored on macOS (Seatbelt doesn't mount /proc).
 	EnableWeakerNestedSandbox bool
 

@@ -452,6 +452,7 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 	// Should have Docker proxy vars
 	assert.Contains(t, envMap, "DOCKER_HTTP_PROXY", "Should set DOCKER_HTTP_PROXY")
 	assert.Contains(t, envMap, "DOCKER_HTTPS_PROXY", "Should set DOCKER_HTTPS_PROXY")
+	assert.Contains(t, envMap, "DOCKER_NO_PROXY", "Should set DOCKER_NO_PROXY")
 
 	// Should have gRPC proxy vars
 	assert.Contains(t, envMap, "GRPC_PROXY", "Should set GRPC_PROXY")

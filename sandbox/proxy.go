@@ -181,6 +181,7 @@ func (p *NetworkProxy) Env() []string {
 		// Docker proxy
 		"DOCKER_HTTP_PROXY="+httpAddr,
 		"DOCKER_HTTPS_PROXY="+httpAddr,
+		"DOCKER_NO_PROXY="+noProxyAddresses,
 
 		// gRPC proxy
 		"GRPC_PROXY="+socksURL,
