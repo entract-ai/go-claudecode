@@ -11,7 +11,9 @@ import (
 // child dies with parent, and new session created.
 //
 // Security model:
-//   - All processes run in isolated namespaces (network, IPC, PID, etc.) by default
+//   - PID namespace is isolated by default; network namespace is isolated when network
+//     is blocked or proxy-filtered. IPC and UTS namespaces are shared for compatibility
+//     with shared memory (PostgreSQL) and hostname-dependent programs.
 //   - Only explicitly mounted paths are accessible inside the sandbox
 //   - Read-only mounts prevent modification of system files
 //   - Read-write mounts should be limited to working directories and necessary user data

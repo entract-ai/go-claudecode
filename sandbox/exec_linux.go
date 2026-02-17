@@ -204,7 +204,10 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 	for _, denyPath := range policy.DenyWritePaths {
 		canonDeny, err := canonicalPath(denyPath)
 		if err != nil {
-			// Path doesn't exist yet — mount /dev/null to prevent creation
+			// Path doesn't exist yet — mount /dev/null at the raw path to prevent
+			// creation. We use the raw path because canonicalization requires the
+			// path to exist. This is safe because bubblewrap resolves mount targets
+			// within its mount namespace.
 			args = append(args, "--ro-bind", "/dev/null", denyPath)
 			continue
 		}
