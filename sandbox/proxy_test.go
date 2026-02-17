@@ -10,11 +10,33 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// closeTracker wraps a net.Conn and counts how many times Close() is called
+// through the wrapper. Direct closes on the underlying connection are not tracked.
+type closeTracker struct {
+	net.Conn
+	mu         sync.Mutex
+	closeCount int
+}
+
+func (c *closeTracker) Close() error {
+	c.mu.Lock()
+	c.closeCount++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *closeTracker) CloseCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeCount
+}
 
 func TestNetworkProxy_StartStop(t *testing.T) {
 	t.Parallel()
@@ -343,6 +365,201 @@ func TestNetworkFilter_PortMatching(t *testing.T) {
 	assert.True(t, proxy.isAllowed("api.example.com", "80"))
 	assert.True(t, proxy.isAllowed("api.example.com", "443"))
 	assert.True(t, proxy.isAllowed("api.example.com", "8080"))
+}
+
+func TestNetworkProxy_Env_NoProxy(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+
+	// Should have NO_PROXY and no_proxy
+	foundNoProxy := false
+	foundNoProxyLower := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "NO_PROXY=") {
+			foundNoProxy = true
+			// Should contain localhost, private networks
+			assert.Contains(t, e, "localhost")
+			assert.Contains(t, e, "127.0.0.1")
+			assert.Contains(t, e, "::1")
+			assert.Contains(t, e, "192.168.0.0/16")
+			assert.Contains(t, e, "10.0.0.0/8")
+			assert.Contains(t, e, "172.16.0.0/12")
+		}
+		if strings.HasPrefix(e, "no_proxy=") {
+			foundNoProxyLower = true
+		}
+	}
+	assert.True(t, foundNoProxy, "Should have NO_PROXY environment variable")
+	assert.True(t, foundNoProxyLower, "Should have no_proxy environment variable")
+}
+
+func TestNetworkProxy_Env_Socks5h(t *testing.T) {
+	t.Parallel()
+
+	// Only test on macOS-style TCP sockets where we can inspect the URL scheme
+	if runtime.GOOS == "linux" {
+		t.Skip("SOCKS URL format test only applicable to macOS TCP sockets")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "ALL_PROXY=") {
+			// Must use socks5h:// (not socks5://) for DNS through proxy
+			assert.Contains(t, e, "socks5h://", "ALL_PROXY should use socks5h:// for proxy-side DNS resolution")
+			assert.NotContains(t, e, "socks5://1", "ALL_PROXY should not use plain socks5://")
+		}
+	}
+}
+
+func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Should have FTP_PROXY
+	assert.Contains(t, envMap, "FTP_PROXY", "Should set FTP_PROXY")
+	assert.Contains(t, envMap, "ftp_proxy", "Should set ftp_proxy")
+
+	// RSYNC_PROXY only set on macOS (requires TCP host:port, not Unix socket paths)
+	if runtime.GOOS == "darwin" {
+		assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY on macOS")
+	} else {
+		assert.NotContains(t, envMap, "RSYNC_PROXY",
+			"Should not set RSYNC_PROXY on Linux (Unix socket path is incompatible with rsync)")
+	}
+
+	// Should have Docker proxy vars
+	assert.Contains(t, envMap, "DOCKER_HTTP_PROXY", "Should set DOCKER_HTTP_PROXY")
+	assert.Contains(t, envMap, "DOCKER_HTTPS_PROXY", "Should set DOCKER_HTTPS_PROXY")
+	assert.Contains(t, envMap, "DOCKER_NO_PROXY", "Should set DOCKER_NO_PROXY")
+
+	// Should have gRPC proxy vars
+	assert.Contains(t, envMap, "GRPC_PROXY", "Should set GRPC_PROXY")
+	assert.Contains(t, envMap, "grpc_proxy", "Should set grpc_proxy")
+}
+
+func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("GIT_SSH_COMMAND only set on macOS")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+	foundGitSSH := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_SSH_COMMAND=") {
+			foundGitSSH = true
+			assert.Contains(t, e, "ssh")
+			assert.Contains(t, e, "ProxyCommand")
+			assert.Contains(t, e, "nc")
+		}
+	}
+	assert.True(t, foundGitSSH, "Should have GIT_SSH_COMMAND on macOS")
+}
+
+func TestBidirectionalCopy_DoesNotClose(t *testing.T) {
+	t.Parallel()
+
+	server, client := net.Pipe()
+
+	// Wrap connections in close trackers to count Close() calls
+	serverTracker := &closeTracker{Conn: server}
+	clientTracker := &closeTracker{Conn: client}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bidirectionalCopy(serverTracker, clientTracker)
+	}()
+
+	// Close underlying connections directly (bypassing trackers) to unblock
+	// bidirectionalCopy. This simulates the caller's defer Close() pattern.
+	client.Close()
+	server.Close()
+	<-done
+
+	// bidirectionalCopy must not call Close() on connections it receives.
+	// Callers handle connection lifecycle via defer.
+	assert.Equal(t, 0, serverTracker.CloseCount(),
+		"bidirectionalCopy must not call Close on dst connection")
+	assert.Equal(t, 0, clientTracker.CloseCount(),
+		"bidirectionalCopy must not call Close on src connection")
+}
+
+// closeWriteTracker wraps a net.Conn and tracks CloseWrite() calls.
+// Used to verify bidirectionalCopy signals half-close via the closeWriter interface.
+type closeWriteTracker struct {
+	net.Conn
+	mu              sync.Mutex
+	closeWriteCount int
+}
+
+func (c *closeWriteTracker) CloseWrite() error {
+	c.mu.Lock()
+	c.closeWriteCount++
+	c.mu.Unlock()
+	// Don't actually close -- net.Pipe doesn't support CloseWrite
+	return nil
+}
+
+func (c *closeWriteTracker) CloseWriteCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeWriteCount
+}
+
+func TestBidirectionalCopy_CallsCloseWrite(t *testing.T) {
+	t.Parallel()
+
+	server, client := net.Pipe()
+
+	// Wrap with closeWriteTracker to verify CloseWrite is called
+	serverTracker := &closeWriteTracker{Conn: server}
+	clientTracker := &closeWriteTracker{Conn: client}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bidirectionalCopy(serverTracker, clientTracker)
+	}()
+
+	// Close underlying connections to trigger EOF
+	client.Close()
+	server.Close()
+	<-done
+
+	// bidirectionalCopy should call CloseWrite on both sides via the
+	// closeWriter interface (preventing deadlocks on Unix domain sockets)
+	assert.Greater(t, serverTracker.CloseWriteCount(), 0,
+		"bidirectionalCopy should call CloseWrite on dst via closeWriter interface")
+	assert.Greater(t, clientTracker.CloseWriteCount(), 0,
+		"bidirectionalCopy should call CloseWrite on src via closeWriter interface")
 }
 
 // Test helpers

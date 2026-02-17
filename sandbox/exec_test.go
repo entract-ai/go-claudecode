@@ -230,6 +230,64 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+func TestDangerousFilesList_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	list1 := DangerousFilesList()
+	list2 := DangerousFilesList()
+
+	require.Equal(t, list1, list2, "Both calls should return identical lists")
+	require.NotEmpty(t, list1, "DangerousFilesList should not be empty")
+
+	// Mutating the returned slice must not affect future calls
+	list1[0] = "MUTATED"
+	list3 := DangerousFilesList()
+	assert.NotEqual(t, "MUTATED", list3[0],
+		"Modifying returned slice must not affect the source list")
+}
+
+func TestDangerousDirectoriesList_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	list1 := DangerousDirectoriesList()
+	list2 := DangerousDirectoriesList()
+
+	require.Equal(t, list1, list2, "Both calls should return identical lists")
+	require.NotEmpty(t, list1, "DangerousDirectoriesList should not be empty")
+
+	// Mutating the returned slice must not affect future calls
+	list1[0] = "MUTATED"
+	list3 := DangerousDirectoriesList()
+	assert.NotEqual(t, "MUTATED", list3[0],
+		"Modifying returned slice must not affect the source list")
+}
+
+func TestSeatbeltBasePolicy_NoBsdSbImport(t *testing.T) {
+	t.Parallel()
+
+	// Read the seatbelt policy file directly to verify it doesn't import bsd.sb
+	policyContent, err := os.ReadFile("seatbelt_base_policy.sbpl")
+	require.NoError(t, err)
+
+	policyStr := string(policyContent)
+	// Check for actual import directive, not comments mentioning it
+	assert.NotContains(t, policyStr, `(import "`,
+		"Seatbelt policy must not import any external profiles (bsd.sb or otherwise)")
+}
+
+func TestSeatbeltBasePolicy_NoUnconditionalTrustd(t *testing.T) {
+	t.Parallel()
+
+	policyContent, err := os.ReadFile("seatbelt_base_policy.sbpl")
+	require.NoError(t, err)
+
+	policyStr := string(policyContent)
+	// Check that trustd.agent is not in an (allow mach-lookup ...) rule.
+	// It may appear in comments explaining that it's conditionally added.
+	assert.NotContains(t, policyStr, `(global-name "com.apple.trustd.agent")`,
+		"Seatbelt base policy must not have an allow rule for trustd.agent (should be added conditionally by exec_darwin.go)")
+}
+
 func TestSandboxPolicyGeneration(t *testing.T) {
 	policy := DefaultPolicy()
 

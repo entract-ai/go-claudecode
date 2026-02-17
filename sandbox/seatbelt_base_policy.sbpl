@@ -7,9 +7,11 @@
 ; File access restricted to explicitly mounted paths (added dynamically).
 ; Based on battle-tested Anthropic sandbox-runtime implementation.
 ;
+; NOTE: We intentionally do NOT import bsd.sb. That profile includes permissions
+; that vary across macOS versions and could silently undermine our deny-by-default
+; security model. All necessary permissions are explicitly allowed below.
+;
 ; LogTag: praxis-LOGTAG (replaced at runtime with unique identifier)
-
-(import "/System/Library/Sandbox/Profiles/bsd.sb")
 
 ; Essential process operations
 (allow process-exec)
@@ -22,6 +24,8 @@
 (allow user-preference-read)
 
 ; Mach IPC - specific services only (no wildcard)
+; NOTE: com.apple.trustd.agent is conditionally added by exec_darwin.go
+; based on EnableWeakerNetworkIsolation to avoid a data exfiltration vector.
 (allow mach-lookup
   (global-name "com.apple.audio.systemsoundserver")
   (global-name "com.apple.distributed_notifications@Uv3")
@@ -32,7 +36,6 @@
   (global-name "com.apple.PowerManagement.control")
   (global-name "com.apple.system.logger")
   (global-name "com.apple.system.notification_center")
-  (global-name "com.apple.trustd.agent")
   (global-name "com.apple.system.opendirectoryd.libinfo")
   (global-name "com.apple.system.opendirectoryd.membership")
   (global-name "com.apple.bsd.dirhelper")
@@ -145,4 +148,5 @@
   )
 )
 
-; File read/write access to mounted paths added dynamically by exec_darwin.go
+; File read/write access, deny rules, trustd.agent, and network rules
+; are added dynamically by exec_darwin.go
