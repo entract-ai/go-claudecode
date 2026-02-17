@@ -31,6 +31,48 @@ func TestBubblewrapArgs_SelectiveUnsharing(t *testing.T) {
 	assert.Contains(t, args, "--unshare-net", "Should unshare network namespace by default")
 }
 
+func TestBubblewrapArgs_DefaultNoIPCUTSUnshare(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// By default, IPC and UTS should NOT be unshared
+	for _, arg := range args {
+		assert.NotEqual(t, "--unshare-ipc", arg, "Should not unshare IPC by default")
+		assert.NotEqual(t, "--unshare-uts", arg, "Should not unshare UTS by default")
+	}
+}
+
+func TestBubblewrapArgs_UnshareIPC(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.UnshareIPC = true
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	assert.Contains(t, args, "--unshare-ipc", "Should unshare IPC when UnshareIPC is true")
+}
+
+func TestBubblewrapArgs_UnshareUTS(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.UnshareUTS = true
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	assert.Contains(t, args, "--unshare-uts", "Should unshare UTS when UnshareUTS is true")
+}
+
 func TestBubblewrapArgs_NetworkAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -126,6 +168,79 @@ func TestBubblewrapArgs_DenyWritePaths_NonExistent(t *testing.T) {
 		}
 	}
 	assert.True(t, foundDevNull, "Should mount /dev/null at non-existent deny path")
+}
+
+func TestBubblewrapArgs_DenyReadPaths_Directory(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretDir := tmpDir + "/secrets"
+	require.NoError(t, os.MkdirAll(secretDir, 0o755))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowAllReads = true
+	policy.DenyReadPaths = []string{secretDir}
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// Directory deny-read should use --tmpfs to hide the directory
+	foundTmpfs := false
+	for i, arg := range args {
+		if arg == "--tmpfs" && i+1 < len(args) && args[i+1] == secretDir {
+			foundTmpfs = true
+			break
+		}
+	}
+	assert.True(t, foundTmpfs, "Should use --tmpfs to hide denied read directory")
+}
+
+func TestBubblewrapArgs_DenyReadPaths_File(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretFile := tmpDir + "/secret.txt"
+	require.NoError(t, os.WriteFile(secretFile, []byte("secret"), 0o644))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowAllReads = true
+	policy.DenyReadPaths = []string{secretFile}
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// File deny-read should use --ro-bind /dev/null
+	foundDevNull := false
+	for i, arg := range args {
+		if arg == "--ro-bind" && i+1 < len(args) && args[i+1] == "/dev/null" &&
+			i+2 < len(args) && args[i+2] == secretFile {
+			foundDevNull = true
+			break
+		}
+	}
+	assert.True(t, foundDevNull, "Should use --ro-bind /dev/null to hide denied read file")
+}
+
+func TestBubblewrapArgs_DenyReadPaths_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.AllowAllReads = true
+	policy.DenyReadPaths = []string{"/tmp/nonexistent-deny-read-test-path"}
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// Non-existent paths should be silently skipped
+	for i, arg := range args {
+		if (arg == "--tmpfs" || arg == "--ro-bind") && i+1 < len(args) {
+			assert.NotContains(t, args[i+1], "nonexistent-deny-read",
+				"Should not mount non-existent deny-read paths")
+		}
+	}
 }
 
 func TestDangerousWriteDenyPaths(t *testing.T) {

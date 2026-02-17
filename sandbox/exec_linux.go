@@ -44,8 +44,9 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 	}
 	cmd.Env = buildEnv(p, tmpDir)
 
-	// If network proxy is configured, add proxy environment variables
+	// If network proxy is configured, filter existing proxy vars and add our own
 	if p.NetworkProxy != nil {
+		cmd.Env = filterProxyEnvVars(cmd.Env)
 		cmd.Env = append(cmd.Env, p.NetworkProxy.Env()...)
 	}
 
@@ -126,27 +127,6 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 	}
 
-	// Mount Unix sockets for network proxy (if configured)
-	if policy.NetworkProxy != nil {
-		// Extract Unix socket paths from proxy addresses
-		httpSock := extractUnixSocketPath(policy.NetworkProxy.HTTPAddr())
-		socksSock := extractUnixSocketPath(policy.NetworkProxy.SOCKSAddr())
-
-		// Mount sockets into sandbox (read-write for bidirectional communication)
-		if httpSock != "" {
-			args, err = appendMount(args, seen, mount{flag: "--bind", source: httpSock, target: httpSock})
-			if err != nil {
-				return nil, fmt.Errorf("mount http proxy socket: %w", err)
-			}
-		}
-		if socksSock != "" {
-			args, err = appendMount(args, seen, mount{flag: "--bind", source: socksSock, target: socksSock})
-			if err != nil {
-				return nil, fmt.Errorf("mount socks proxy socket: %w", err)
-			}
-		}
-	}
-
 	// On modern Linux systems, /bin, /lib, /lib64, and /sbin are symlinks to /usr subdirectories.
 	// We need to recreate these symlinks in the sandbox for executables and libraries to be found.
 	// Skip this when AllowAllReads is true since the symlinks already exist from the root bind.
@@ -167,17 +147,22 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 	}
 
-	// Namespace isolation: use selective unsharing (not --unshare-all) to avoid
-	// breaking shared memory (IPC) and hostname-dependent programs (UTS).
-	// Upstream only unshares PID (always) and network (conditionally).
+	// Namespace isolation: use selective unsharing (not --unshare-all).
+	// PID and network are unshared by default; IPC and UTS are shared by default
+	// for compatibility with shared memory and hostname-dependent programs.
 	if !policy.AllowSharedNamespaces {
 		args = append(args, "--unshare-pid")
 	}
 	// Network namespace: always unshare when proxy is configured (to force traffic
-	// through proxy) or when network is blocked. This applies regardless of
-	// AllowSharedNamespaces since network isolation is a separate security concern.
+	// through proxy) or when network is blocked.
 	if policy.NetworkProxy != nil || !policy.AllowNetwork {
 		args = append(args, "--unshare-net")
+	}
+	if policy.UnshareIPC {
+		args = append(args, "--unshare-ipc")
+	}
+	if policy.UnshareUTS {
+		args = append(args, "--unshare-uts")
 	}
 
 	// Process lifecycle control
@@ -214,6 +199,24 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 		// Re-bind as read-only to override the parent writable mount
 		args = append(args, "--ro-bind", canonDeny, canonDeny)
+	}
+
+	// Deny-read: hide specific paths from read access.
+	// Directories are overlaid with an empty tmpfs; files are replaced with /dev/null.
+	for _, denyPath := range policy.DenyReadPaths {
+		info, err := os.Stat(denyPath)
+		if err != nil {
+			continue // skip non-existent paths
+		}
+		canonDeny, err := canonicalPath(denyPath)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			args = append(args, "--tmpfs", canonDeny)
+		} else {
+			args = append(args, "--ro-bind", "/dev/null", canonDeny)
+		}
 	}
 
 	// Append the separator and the actual command + arguments
@@ -253,13 +256,3 @@ func ensurePath(path string) error {
 	return nil
 }
 
-// extractUnixSocketPath extracts the filesystem path from a Unix socket address.
-// For addresses like "unix:///tmp/praxis-NNNN/http.sock", returns "/tmp/praxis-NNNN/http.sock".
-// For non-Unix socket addresses, returns empty string.
-func extractUnixSocketPath(addr string) string {
-	const prefix = "unix://"
-	if len(addr) > len(prefix) && addr[:len(prefix)] == prefix {
-		return addr[len(prefix):]
-	}
-	return ""
-}

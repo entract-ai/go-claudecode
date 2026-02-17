@@ -47,6 +47,22 @@ func TestNewClaudeCodeSandboxPolicy(t *testing.T) {
 	assert.True(t, hasBin, "should have /bin mounted read-only")
 }
 
+func TestNewClaudeCodeSandboxPolicy_DenyWritePaths(t *testing.T) {
+	workDir := t.TempDir()
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir)
+	require.NoError(t, err)
+
+	// DenyWritePaths should be populated with dangerous paths
+	assert.NotEmpty(t, policy.DenyWritePaths, "DenyWritePaths should be set")
+
+	// Should contain expected paths
+	assert.Contains(t, policy.DenyWritePaths, filepath.Join(workDir, ".gitconfig"))
+	assert.Contains(t, policy.DenyWritePaths, filepath.Join(workDir, ".bashrc"))
+	assert.Contains(t, policy.DenyWritePaths, filepath.Join(workDir, ".git/hooks"))
+	assert.Contains(t, policy.DenyWritePaths, filepath.Join(workDir, ".vscode"))
+}
+
 func TestNewClaudeCodeSandboxPolicy_HomeDirMounts(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)

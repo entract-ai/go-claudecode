@@ -57,6 +57,15 @@ type Policy struct {
 	//   }
 	DenyWritePaths []string
 
+	// DenyReadPaths are paths that should be denied read access even when
+	// AllowAllReads is true. This provides a "deny-within-allow" model for reads.
+	//
+	// On Linux, directories are hidden with --tmpfs (empty tmpfs overlay) and
+	// files are hidden with --ro-bind /dev/null. Non-existent paths are skipped.
+	// On macOS, corresponding Seatbelt deny file-read* rules are generated using
+	// parameter indirection.
+	DenyReadPaths []string
+
 	// WorkDir specifies the working directory for the sandboxed command.
 	// If empty, defaults to the current working directory (os.Getwd()).
 	//
@@ -122,7 +131,8 @@ type Policy struct {
 	// network connections.
 	//
 	// - macOS: Seatbelt restricts network access to only the proxy ports
-	// - Linux: Full network namespace isolation (--unshare-net) with Unix socket mounting
+	// - Linux: Full network namespace isolation (--unshare-net); proxy listens on
+	//   localhost TCP sockets accessible within the isolated namespace
 	//
 	// The proxy must be explicitly created and closed by the caller:
 	//   proxy, err := NewNetworkProxy(filter)
@@ -158,11 +168,23 @@ type Policy struct {
 	// AllowSharedNamespaces, when true, disables PID namespace isolation.
 	// The default (false) isolates the PID namespace and conditionally isolates
 	// the network namespace (based on AllowNetwork and NetworkProxy settings).
-	// IPC and UTS namespaces are always shared for compatibility with shared memory
-	// (PostgreSQL, test frameworks) and hostname-dependent programs.
 	// Only set to true if the sandboxed process must share PID namespace with the host.
 	// Ignored on macOS (Seatbelt doesn't use Linux namespaces).
 	AllowSharedNamespaces bool
+
+	// UnshareIPC, when true, isolates the IPC namespace (adds --unshare-ipc).
+	// The default (false) shares IPC with the host for compatibility with shared
+	// memory (PostgreSQL, test frameworks using POSIX shared memory).
+	// Only set to true if you need strict IPC isolation and don't use shared memory.
+	// Ignored on macOS (Seatbelt doesn't use Linux namespaces).
+	UnshareIPC bool
+
+	// UnshareUTS, when true, isolates the UTS namespace (adds --unshare-uts).
+	// The default (false) shares UTS with the host so hostname-dependent programs
+	// (like hostname(1)) see the real hostname.
+	// Only set to true if you need the sandbox to have its own hostname.
+	// Ignored on macOS (Seatbelt doesn't use Linux namespaces).
+	UnshareUTS bool
 
 	// AllowParentSurvival, when true, allows the sandboxed process to outlive its parent
 	// (skips --die-with-parent). The default (false) ensures child processes are cleaned up.
