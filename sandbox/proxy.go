@@ -247,7 +247,7 @@ func (p *NetworkProxy) Env() []string {
 	httpHost := strings.TrimPrefix(httpAddr, "http://")
 	if _, httpPort, err := net.SplitHostPort(httpHost); err == nil {
 		env = append(env,
-			"CLOUDSDK_PROXY_TYPE=https",
+			"CLOUDSDK_PROXY_TYPE=http",
 			"CLOUDSDK_PROXY_ADDRESS=127.0.0.1",
 			"CLOUDSDK_PROXY_PORT="+httpPort,
 		)

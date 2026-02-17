@@ -382,6 +382,9 @@ func DangerousWriteDenyPaths(baseDir string, allowGitConfig bool) []string {
 // supplements DangerousWriteDenyPaths (which covers only the base directory)
 // by finding nested dangerous files like subproject/.gitconfig.
 //
+// Dangerous directories at depth 1 may overlap with DangerousWriteDenyPaths
+// results. Callers combining both should deduplicate the merged list.
+//
 // Skips node_modules directories. Uses case-insensitive matching on macOS
 // to account for APFS default behavior.
 func ScanDangerousWriteDenyPaths(baseDir string, allowGitConfig bool, maxDepth int) ([]string, error) {
@@ -405,7 +408,7 @@ func ScanDangerousWriteDenyPaths(baseDir string, allowGitConfig bool, maxDepth i
 		name := d.Name()
 
 		if d.IsDir() {
-			if name == "node_modules" {
+			if matchFilename(name, "node_modules") {
 				return filepath.SkipDir
 			}
 			if depth > maxDepth {

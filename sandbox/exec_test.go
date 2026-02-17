@@ -507,7 +507,7 @@ func TestFilterProxyEnvVars(t *testing.T) {
 		"GRPC_PROXY=socks5://old-proxy:1080",
 		"grpc_proxy=socks5://old-proxy:1080",
 		"GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x old-proxy:1080 %h %p'",
-		"CLOUDSDK_PROXY_TYPE=https",
+		"CLOUDSDK_PROXY_TYPE=http",
 		"CLOUDSDK_PROXY_ADDRESS=127.0.0.1",
 		"CLOUDSDK_PROXY_PORT=8080",
 		"CUSTOM_VAR=keep_me",

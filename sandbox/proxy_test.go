@@ -513,7 +513,7 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 
 	// Should have Google Cloud SDK proxy vars
 	assert.Contains(t, envMap, "CLOUDSDK_PROXY_TYPE")
-	assert.Equal(t, "https", envMap["CLOUDSDK_PROXY_TYPE"])
+	assert.Equal(t, "http", envMap["CLOUDSDK_PROXY_TYPE"])
 	assert.Contains(t, envMap, "CLOUDSDK_PROXY_ADDRESS")
 	assert.Equal(t, "127.0.0.1", envMap["CLOUDSDK_PROXY_ADDRESS"])
 	assert.Contains(t, envMap, "CLOUDSDK_PROXY_PORT")

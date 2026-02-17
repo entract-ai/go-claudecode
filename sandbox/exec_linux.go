@@ -25,15 +25,14 @@ func detectWSLVersion(procVersionPath string) string {
 	if err != nil {
 		return ""
 	}
-	content := string(data)
-	upper := strings.ToUpper(content)
+	upper := strings.ToUpper(string(data))
 	if idx := strings.Index(upper, "WSL"); idx >= 0 && idx+3 < len(upper) {
 		rest := upper[idx+3:]
-		if len(rest) > 0 && rest[0] >= '1' && rest[0] <= '9' {
+		if rest[0] >= '1' && rest[0] <= '9' {
 			return string(rest[0])
 		}
 	}
-	if strings.Contains(strings.ToLower(content), "microsoft") {
+	if strings.Contains(upper, "MICROSOFT") {
 		return "1"
 	}
 	return ""
@@ -252,7 +251,11 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 	for _, denyPath := range policy.DenyWritePaths {
 		canonDeny, err := canonicalPath(denyPath)
 		if err != nil {
-			// Path doesn't exist -- check for symlinks in the path
+			// Path doesn't exist -- check for symlinks in the path.
+			// When found, we block the symlink itself (not just the
+			// target beneath it) to prevent replacement attacks where
+			// the attacker deletes the symlink and creates a real
+			// directory without protections.
 			if sym := findSymlinkInPath(denyPath, allowedWritePaths); sym != "" {
 				args = append(args, "--ro-bind", "/dev/null", sym)
 				continue
