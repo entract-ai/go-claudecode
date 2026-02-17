@@ -81,11 +81,12 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		seen.add("--ro-bind", "/")
 	}
 
-	// Essential virtual filesystems (always required for process execution)
-	args = append(args,
-		"--proc", "/proc",
-		"--dev", "/dev",
-	)
+	// Essential virtual filesystems
+	// Mount fresh /proc unless in weaker nested sandbox mode (Docker without CAP_SYS_ADMIN)
+	if !policy.EnableWeakerNestedSandbox {
+		args = append(args, "--proc", "/proc")
+	}
+	args = append(args, "--dev", "/dev")
 
 	// Temp directory (isolated tmpfs if requested)
 	// Must be mounted BEFORE proxy sockets so they can be bind-mounted on top
@@ -166,15 +167,19 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 	}
 
-	// Network and namespace isolation
+	// Namespace isolation: use selective unsharing (not --unshare-all) to avoid
+	// breaking shared memory (IPC) and hostname-dependent programs (UTS).
+	// Upstream only unshares PID (always) and network (conditionally).
 	if !policy.AllowSharedNamespaces {
-		// Unshare all namespaces (network, IPC, PID, UTS, cgroup)
-		args = append(args, "--unshare-all")
+		// Always unshare PID namespace for security isolation
+		args = append(args, "--unshare-pid")
 
-		// Re-share network if AllowNetwork is true and no proxy filtering
-		// (proxy requires isolated network namespace to force traffic through proxy)
-		if policy.AllowNetwork && policy.NetworkProxy == nil {
-			args = append(args, "--share-net")
+		// Network namespace: unshare unless explicitly allowed and no proxy
+		if policy.NetworkProxy != nil {
+			// Proxy-based filtering requires isolated network to force traffic through proxy
+			args = append(args, "--unshare-net")
+		} else if !policy.AllowNetwork {
+			args = append(args, "--unshare-net")
 		}
 	} else if policy.NetworkProxy != nil {
 		// Proxy-based filtering: isolate network namespace to force traffic through proxy
@@ -203,6 +208,19 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		return nil, fmt.Errorf("bind working directory: %w", err)
 	}
 	args = append(args, "--chdir", workdir)
+
+	// Deny-within-allow: re-mount specific paths read-only within writable mounts.
+	// This must come after all writable mounts so the read-only bind takes precedence.
+	for _, denyPath := range policy.DenyWritePaths {
+		canonDeny, err := canonicalPath(denyPath)
+		if err != nil {
+			// Path doesn't exist yet — mount /dev/null to prevent creation
+			args = append(args, "--ro-bind", "/dev/null", denyPath)
+			continue
+		}
+		// Re-bind as read-only to override the parent writable mount
+		args = append(args, "--ro-bind", canonDeny, canonDeny)
+	}
 
 	// Append the separator and the actual command + arguments
 	args = append(args, "--")

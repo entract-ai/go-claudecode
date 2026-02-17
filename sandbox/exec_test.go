@@ -230,6 +230,32 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+func TestSeatbeltBasePolicy_NoBsdSbImport(t *testing.T) {
+	t.Parallel()
+
+	// Read the seatbelt policy file directly to verify it doesn't import bsd.sb
+	policyContent, err := os.ReadFile("seatbelt_base_policy.sbpl")
+	require.NoError(t, err)
+
+	policyStr := string(policyContent)
+	// Check for actual import directive, not comments mentioning it
+	assert.NotContains(t, policyStr, `(import "`,
+		"Seatbelt policy must not import any external profiles (bsd.sb or otherwise)")
+}
+
+func TestSeatbeltBasePolicy_NoUnconditionalTrustd(t *testing.T) {
+	t.Parallel()
+
+	policyContent, err := os.ReadFile("seatbelt_base_policy.sbpl")
+	require.NoError(t, err)
+
+	policyStr := string(policyContent)
+	// Check that trustd.agent is not in an (allow mach-lookup ...) rule.
+	// It may appear in comments explaining that it's conditionally added.
+	assert.NotContains(t, policyStr, `(global-name "com.apple.trustd.agent")`,
+		"Seatbelt base policy must not have an allow rule for trustd.agent (should be added conditionally by exec_darwin.go)")
+}
+
 func TestSandboxPolicyGeneration(t *testing.T) {
 	policy := DefaultPolicy()
 

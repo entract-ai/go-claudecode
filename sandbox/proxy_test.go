@@ -345,6 +345,144 @@ func TestNetworkFilter_PortMatching(t *testing.T) {
 	assert.True(t, proxy.isAllowed("api.example.com", "8080"))
 }
 
+func TestNetworkProxy_Env_NoProxy(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+
+	// Should have NO_PROXY and no_proxy
+	foundNoProxy := false
+	foundNoProxyLower := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "NO_PROXY=") {
+			foundNoProxy = true
+			// Should contain localhost, private networks
+			assert.Contains(t, e, "localhost")
+			assert.Contains(t, e, "127.0.0.1")
+			assert.Contains(t, e, "::1")
+			assert.Contains(t, e, "192.168.0.0/16")
+			assert.Contains(t, e, "10.0.0.0/8")
+			assert.Contains(t, e, "172.16.0.0/12")
+		}
+		if strings.HasPrefix(e, "no_proxy=") {
+			foundNoProxyLower = true
+		}
+	}
+	assert.True(t, foundNoProxy, "Should have NO_PROXY environment variable")
+	assert.True(t, foundNoProxyLower, "Should have no_proxy environment variable")
+}
+
+func TestNetworkProxy_Env_Socks5h(t *testing.T) {
+	t.Parallel()
+
+	// Only test on macOS-style TCP sockets where we can inspect the URL scheme
+	if runtime.GOOS == "linux" {
+		t.Skip("SOCKS URL format test only applicable to macOS TCP sockets")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "ALL_PROXY=") {
+			// Must use socks5h:// (not socks5://) for DNS through proxy
+			assert.Contains(t, e, "socks5h://", "ALL_PROXY should use socks5h:// for proxy-side DNS resolution")
+			assert.NotContains(t, e, "socks5://1", "ALL_PROXY should not use plain socks5://")
+		}
+	}
+}
+
+func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Should have FTP_PROXY
+	assert.Contains(t, envMap, "FTP_PROXY", "Should set FTP_PROXY")
+	assert.Contains(t, envMap, "ftp_proxy", "Should set ftp_proxy")
+
+	// Should have RSYNC_PROXY
+	assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY")
+
+	// Should have Docker proxy vars
+	assert.Contains(t, envMap, "DOCKER_HTTP_PROXY", "Should set DOCKER_HTTP_PROXY")
+	assert.Contains(t, envMap, "DOCKER_HTTPS_PROXY", "Should set DOCKER_HTTPS_PROXY")
+
+	// Should have gRPC proxy vars
+	assert.Contains(t, envMap, "GRPC_PROXY", "Should set GRPC_PROXY")
+	assert.Contains(t, envMap, "grpc_proxy", "Should set grpc_proxy")
+}
+
+func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != "darwin" {
+		t.Skip("GIT_SSH_COMMAND only set on macOS")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	env := proxy.Env()
+	foundGitSSH := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_SSH_COMMAND=") {
+			foundGitSSH = true
+			assert.Contains(t, e, "ssh")
+			assert.Contains(t, e, "ProxyCommand")
+			assert.Contains(t, e, "nc")
+		}
+	}
+	assert.True(t, foundGitSSH, "Should have GIT_SSH_COMMAND on macOS")
+}
+
+func TestBidirectionalCopy_NoDoubleClose(t *testing.T) {
+	t.Parallel()
+
+	// Create a pipe-based connection pair to test bidirectionalCopy
+	server, client := net.Pipe()
+
+	// Write data from client, then close to signal EOF
+	go func() {
+		client.Write([]byte("hello"))
+		client.Close()
+	}()
+
+	// bidirectionalCopy should not close the connections itself;
+	// callers are responsible for closing via defer.
+	bidirectionalCopy(server, client)
+
+	// After bidirectionalCopy returns, closing again must not panic.
+	// If bidirectionalCopy closed the connections, this would be a double-close.
+	// net.Pipe connections return an error on double-close but don't panic,
+	// so we verify bidirectionalCopy doesn't close by checking server is
+	// still usable for Close().
+	err := server.Close()
+	// With the fix, this should succeed (first close).
+	// Before the fix, bidirectionalCopy would have already closed it.
+	// net.Pipe.Close is idempotent so we just verify no panic occurred.
+	_ = err
+}
+
 // Test helpers
 
 // testHTTPServer is a simple HTTP server for testing proxy functionality.

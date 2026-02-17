@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -20,10 +21,11 @@ import (
 // To create a usable sandbox, at minimum add read-only system mounts and the working directory
 // as a read-write mount. See DefaultPolicy() for a reasonable starting configuration.
 //
-// Concurrency: Policy instances are safe to reuse across concurrent calls to Command().
-// The Command() method creates a deep copy of mount slices to prevent data races.
+// Concurrency: Policy instances must not be mutated while Command() calls are in progress.
+// A single Policy can be reused across concurrent Command() calls provided that the
+// caller does not modify its fields (ReadOnlyMounts, ReadWriteMounts, etc.) concurrently.
 // This makes Policy ideal for use in HTTP handlers and other concurrent contexts where
-// the same sandbox configuration is reused across multiple requests.
+// the same immutable sandbox configuration is reused across multiple requests.
 type Policy struct {
 	// ReadOnlyMounts are mounted read-only inside the sandbox (e.g., /usr, /bin, /lib).
 	// These allow the sandboxed process to execute system binaries and load libraries.
@@ -32,6 +34,23 @@ type Policy struct {
 	// ReadWriteMounts are mounted read-write inside the sandbox (e.g., working directory).
 	// Limit these to only what the sandboxed process needs to write.
 	ReadWriteMounts []Mount
+
+	// DenyWritePaths are paths within writable mounts that should be denied write access.
+	// This implements a "deny-within-allow" model: paths listed here are re-mounted
+	// read-only even if they fall within a ReadWriteMount or the WorkDir.
+	//
+	// On Linux, these paths are re-bound as read-only over the writable mount.
+	// On macOS, corresponding Seatbelt deny rules are generated.
+	//
+	// Common use case: blocking writes to dangerous files (.gitconfig, .bashrc,
+	// .git/hooks) within an otherwise-writable working directory.
+	//
+	// Example:
+	//   policy.DenyWritePaths = []string{
+	//       "/home/user/project/.git/hooks",
+	//       "/home/user/project/.bashrc",
+	//   }
+	DenyWritePaths []string
 
 	// WorkDir specifies the working directory for the sandboxed command.
 	// If empty, defaults to the current working directory (os.Getwd()).
@@ -131,9 +150,12 @@ type Policy struct {
 
 	// The following fields are Linux-specific and ignored on macOS:
 
-	// AllowSharedNamespaces, when true, disables namespace isolation (skips --unshare-all).
-	// The default (false) creates isolated namespaces for network, IPC, PID, etc.
-	// Only set to true if the sandboxed process must communicate with the host system.
+	// AllowSharedNamespaces, when true, disables PID namespace isolation.
+	// The default (false) isolates the PID namespace and conditionally isolates
+	// the network namespace (based on AllowNetwork and NetworkProxy settings).
+	// IPC and UTS namespaces are always shared for compatibility with shared memory
+	// (PostgreSQL, test frameworks) and hostname-dependent programs.
+	// Only set to true if the sandboxed process must share PID namespace with the host.
 	// Ignored on macOS (Seatbelt doesn't use Linux namespaces).
 	AllowSharedNamespaces bool
 
@@ -148,6 +170,23 @@ type Policy struct {
 	// Only set to true if the sandboxed process needs terminal control.
 	// Ignored on macOS (Seatbelt doesn't have this concept).
 	AllowSessionControl bool
+
+	// EnableWeakerNestedSandbox, when true, skips mounting a fresh /proc filesystem.
+	// This is required for running inside unprivileged Docker containers that lack
+	// the CAP_SYS_ADMIN capability needed to mount /proc.
+	// The default (false) mounts a fresh /proc for full PID namespace isolation.
+	// Ignored on macOS (Seatbelt doesn't mount /proc).
+	EnableWeakerNestedSandbox bool
+
+	// EnableWeakerNetworkIsolation, when true, allows access to com.apple.trustd.agent
+	// in the macOS Seatbelt profile. This is needed for Go programs (gh, gcloud,
+	// terraform, kubectl, etc.) to verify TLS certificates when using the network proxy.
+	// The default (false) blocks trustd.agent access for stronger isolation.
+	//
+	// WARNING: Enabling this opens a potential data exfiltration vector through
+	// the trustd service. Only enable if you need Go TLS verification in the sandbox.
+	// Ignored on Linux (bubblewrap doesn't use Mach IPC).
+	EnableWeakerNetworkIsolation bool
 }
 
 // Mount represents a filesystem path binding into the sandbox.
@@ -226,6 +265,60 @@ func DefaultPolicy() *Policy {
 	}
 
 	return policy
+}
+
+// DangerousFiles lists files that should be protected from writes in sandboxed environments.
+// These are configuration files that could be exploited to achieve code execution
+// outside the sandbox (e.g., by installing git hooks or modifying shell profiles).
+var DangerousFiles = []string{
+	".gitconfig",
+	".gitmodules",
+	".bashrc",
+	".bash_profile",
+	".zshrc",
+	".zprofile",
+	".profile",
+	".ripgreprc",
+	".mcp.json",
+}
+
+// DangerousDirectories lists directories that should be protected from writes.
+// These directories contain configuration that could be exploited to achieve
+// code execution outside the sandbox.
+var DangerousDirectories = []string{
+	".vscode",
+	".idea",
+	".claude/commands",
+	".claude/agents",
+}
+
+// DangerousGitPaths returns paths within a .git directory that should always
+// be protected from writes. The hooks directory is always protected; config
+// is protected unless allowGitConfig is true.
+func DangerousGitPaths(allowGitConfig bool) []string {
+	paths := []string{".git/hooks"}
+	if !allowGitConfig {
+		paths = append(paths, ".git/config")
+	}
+	return paths
+}
+
+// DangerousWriteDenyPaths returns all paths that should be denied write access
+// relative to the given base directory. The returned paths are absolute.
+// This is a convenience function that combines DangerousFiles, DangerousDirectories,
+// and DangerousGitPaths into a single list of absolute paths.
+func DangerousWriteDenyPaths(baseDir string, allowGitConfig bool) []string {
+	var paths []string
+	for _, f := range DangerousFiles {
+		paths = append(paths, filepath.Join(baseDir, f))
+	}
+	for _, d := range DangerousDirectories {
+		paths = append(paths, filepath.Join(baseDir, d))
+	}
+	for _, g := range DangerousGitPaths(allowGitConfig) {
+		paths = append(paths, filepath.Join(baseDir, g))
+	}
+	return paths
 }
 
 // PathExists checks if a path exists. Returns false for any error, including permission denied.

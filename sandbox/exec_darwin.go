@@ -190,6 +190,27 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("  (with message \"%s-write\"))\n", logTag))
 	}
 
+	// Deny-within-allow: block writes and moves (file-write-unlink) to specific paths
+	// within writable mounts. This prevents bypassing write restrictions via rename/move.
+	for _, denyPath := range policy.DenyWritePaths {
+		// Try to canonicalize; use as-is if path doesn't exist yet
+		canonDeny := denyPath
+		if resolved, err := canonicalPath(denyPath); err == nil {
+			canonDeny = resolved
+		}
+		// Deny all write operations (file-write*) to the subpath
+		policyBuilder.WriteString(fmt.Sprintf("(deny file-write*\n  (subpath \"%s\")\n  (with message \"%s-deny\"))\n", canonDeny, logTag))
+		// Also deny file-write-unlink (rename/move) to prevent bypass via mv
+		policyBuilder.WriteString(fmt.Sprintf("(deny file-write-unlink\n  (subpath \"%s\")\n  (with message \"%s-deny-unlink\"))\n", canonDeny, logTag))
+	}
+
+	// Conditionally allow com.apple.trustd.agent for Go TLS certificate verification.
+	// This is an explicit opt-in because it opens a potential data exfiltration vector.
+	if policy.EnableWeakerNetworkIsolation {
+		policyBuilder.WriteString("; trustd.agent - needed for Go TLS certificate verification (weaker network isolation)\n")
+		policyBuilder.WriteString("(allow mach-lookup (global-name \"com.apple.trustd.agent\"))\n")
+	}
+
 	// Add network access rules based on policy
 	if policy.NetworkProxy != nil {
 		// Proxy-based network filtering

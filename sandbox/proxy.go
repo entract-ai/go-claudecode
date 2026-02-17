@@ -33,6 +33,13 @@ type NetworkFilter struct {
 // On macOS, proxies listen on localhost TCP sockets with OS-allocated ports.
 // On Linux, proxies listen on Unix domain sockets in a temporary directory.
 //
+// Known limitation (Linux): The proxy uses unix:// URLs in environment variables
+// (HTTP_PROXY, HTTPS_PROXY). Most standard HTTP client libraries (curl, Python
+// requests, Go net/http, Node.js) do not support unix:// in proxy env vars.
+// The upstream sandbox-runtime solves this with socat relays that create TCP
+// listeners inside the sandbox namespace. Until a similar relay is implemented,
+// Linux network filtering through the proxy may not work with all tools.
+//
 // The proxy must be explicitly closed via Close() to clean up resources.
 // Goroutine leaks will occur if Close() is not called.
 //
@@ -122,32 +129,67 @@ func (p *NetworkProxy) SOCKSAddr() string {
 	return p.socksAddr
 }
 
+// noProxyAddresses lists destinations that should bypass the filtering proxy.
+// This includes localhost, link-local, and RFC 1918 private network ranges.
+const noProxyAddresses = "localhost,127.0.0.1,::1,*.local,.local,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
 // Env returns environment variables configuring HTTP and SOCKS5 proxies.
-// Includes both uppercase and lowercase variants for maximum compatibility.
+// Includes both uppercase and lowercase variants for maximum compatibility,
+// plus tool-specific variables (Docker, gRPC, FTP, RSYNC, GIT_SSH_COMMAND).
 // The caller should append these to cmd.Env when executing sandboxed commands.
 func (p *NetworkProxy) Env() []string {
 	httpAddr := p.HTTPAddr()
 	socksAddr := p.SOCKSAddr()
 
 	env := []string{
+		// Standard HTTP proxy variables
 		"HTTP_PROXY=" + httpAddr,
 		"HTTPS_PROXY=" + httpAddr,
 		"http_proxy=" + httpAddr,
 		"https_proxy=" + httpAddr,
+
+		// NO_PROXY: bypass proxy for localhost and private networks
+		"NO_PROXY=" + noProxyAddresses,
+		"no_proxy=" + noProxyAddresses,
 	}
 
-	// SOCKS proxy format differs between platforms
+	// Build SOCKS proxy URL: use socks5h:// so DNS resolution happens through
+	// the proxy rather than locally (which would fail inside a sandboxed namespace).
+	var socksURL string
 	if runtime.GOOS == "linux" {
-		// Unix socket format for socks
-		env = append(env,
-			"ALL_PROXY="+socksAddr,
-			"all_proxy="+socksAddr,
-		)
+		// Unix socket format for socks (used until socat relay is implemented)
+		socksURL = socksAddr
 	} else {
-		// TCP socket format for socks (socks5://host:port)
+		// TCP socket format for socks
+		socksURL = "socks5h://" + socksAddr
+	}
+
+	env = append(env,
+		"ALL_PROXY="+socksURL,
+		"all_proxy="+socksURL,
+
+		// FTP proxy
+		"FTP_PROXY="+socksURL,
+		"ftp_proxy="+socksURL,
+
+		// RSYNC proxy (host:port format without scheme)
+		"RSYNC_PROXY="+socksAddr,
+
+		// Docker proxy
+		"DOCKER_HTTP_PROXY="+httpAddr,
+		"DOCKER_HTTPS_PROXY="+httpAddr,
+
+		// gRPC proxy
+		"GRPC_PROXY="+socksURL,
+		"grpc_proxy="+socksURL,
+	)
+
+	// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy (macOS only,
+	// where nc with SOCKS support is available).
+	if runtime.GOOS == "darwin" {
+		// Extract the host:port from the SOCKS address for nc
 		env = append(env,
-			"ALL_PROXY=socks5://"+socksAddr,
-			"all_proxy=socks5://"+socksAddr,
+			fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
 		)
 	}
 
@@ -656,6 +698,11 @@ func createListeners() (httpLn, socksLn net.Listener, tmpDir string, err error) 
 }
 
 // createUnixListeners creates Unix domain socket listeners for Linux.
+//
+// TODO: Implement socat-style TCP relay inside sandbox namespace.
+// The upstream sandbox-runtime creates TCP listeners on fixed ports (3128 for HTTP,
+// 1080 for SOCKS) inside the sandbox that relay to these Unix sockets, making
+// the proxy compatible with standard HTTP client libraries.
 func createUnixListeners() (httpLn, socksLn net.Listener, tmpDir string, err error) {
 	tmpDir, err = os.MkdirTemp("", "sandbox-proxy-*")
 	if err != nil {
@@ -730,7 +777,8 @@ func formatSOCKSAddress(addr net.Addr) string {
 }
 
 // bidirectionalCopy copies data bidirectionally between two connections.
-// It closes both connections when either direction finishes or encounters an error.
+// It returns when both directions have finished or encountered an error.
+// The caller is responsible for closing the connections (typically via defer).
 func bidirectionalCopy(dst, src net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -748,7 +796,4 @@ func bidirectionalCopy(dst, src net.Conn) {
 	go copy(src, dst)
 
 	wg.Wait()
-
-	dst.Close()
-	src.Close()
 }
