@@ -507,6 +507,9 @@ func TestFilterProxyEnvVars(t *testing.T) {
 		"GRPC_PROXY=socks5://old-proxy:1080",
 		"grpc_proxy=socks5://old-proxy:1080",
 		"GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x old-proxy:1080 %h %p'",
+		"CLOUDSDK_PROXY_TYPE=https",
+		"CLOUDSDK_PROXY_ADDRESS=127.0.0.1",
+		"CLOUDSDK_PROXY_PORT=8080",
 		"CUSTOM_VAR=keep_me",
 	}
 
@@ -526,6 +529,9 @@ func TestFilterProxyEnvVars(t *testing.T) {
 		assert.False(t, strings.HasPrefix(e, "ALL_PROXY="), "should filter ALL_PROXY")
 		assert.False(t, strings.HasPrefix(e, "NO_PROXY="), "should filter NO_PROXY")
 		assert.False(t, strings.HasPrefix(e, "GIT_SSH_COMMAND="), "should filter GIT_SSH_COMMAND")
+		assert.False(t, strings.HasPrefix(e, "CLOUDSDK_PROXY_TYPE="), "should filter CLOUDSDK_PROXY_TYPE")
+		assert.False(t, strings.HasPrefix(e, "CLOUDSDK_PROXY_ADDRESS="), "should filter CLOUDSDK_PROXY_ADDRESS")
+		assert.False(t, strings.HasPrefix(e, "CLOUDSDK_PROXY_PORT="), "should filter CLOUDSDK_PROXY_PORT")
 	}
 
 	// Should only have the 3 non-proxy vars
@@ -609,4 +615,102 @@ func TestIntegrationReadAccessScope(t *testing.T) {
 	// Ensure the actual content is NOT accessible
 	require.False(t, contains(outputStr, testContent),
 		"SECURITY FAILURE: Sandbox allowed reading file content from unmounted path %s", testFile)
+}
+
+func TestDangerousFiles_MatchesUpstream(t *testing.T) {
+	t.Parallel()
+	files := DangerousFilesList()
+	// .gitattributes is not in upstream's DANGEROUS_FILES
+	assert.NotContains(t, files, ".gitattributes")
+	// Verify the upstream set is present
+	for _, f := range []string{".gitconfig", ".gitmodules", ".bashrc", ".bash_profile",
+		".zshrc", ".zprofile", ".profile", ".ripgreprc", ".mcp.json"} {
+		assert.Contains(t, files, f)
+	}
+}
+
+func TestSeatbeltBasePolicy_NoPraxisReference(t *testing.T) {
+	t.Parallel()
+	policyContent, err := os.ReadFile("seatbelt_base_policy.sbpl")
+	require.NoError(t, err)
+	assert.NotContains(t, string(policyContent), "praxis",
+		"Seatbelt base policy must not contain internal codename")
+}
+
+func TestDangerousGitPaths_MatchesUpstream(t *testing.T) {
+	t.Parallel()
+	paths := DangerousGitPaths(false)
+	assert.Contains(t, paths, ".git/hooks")
+	assert.Contains(t, paths, ".git/config")
+	// .git/info is not in upstream
+	assert.NotContains(t, paths, ".git/info")
+}
+
+func TestScanDangerousWriteDenyPaths_Basic(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "subproject")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, ".gitconfig"), nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, ".bashrc"), nil, 0o644))
+	gitHooks := filepath.Join(sub, ".git", "hooks")
+	require.NoError(t, os.MkdirAll(gitHooks, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, ".git", "config"), nil, 0o644))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	assert.Contains(t, paths, filepath.Join(sub, ".gitconfig"))
+	assert.Contains(t, paths, filepath.Join(sub, ".bashrc"))
+	assert.Contains(t, paths, gitHooks)
+	assert.Contains(t, paths, filepath.Join(sub, ".git", "config"))
+}
+
+func TestScanDangerousWriteDenyPaths_DepthLimit(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	deep := filepath.Join(base, "a", "b", "c", "d")
+	require.NoError(t, os.MkdirAll(deep, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(deep, ".gitconfig"), nil, 0o644))
+	shallow := filepath.Join(base, "a", "b")
+	require.NoError(t, os.WriteFile(filepath.Join(shallow, ".bashrc"), nil, 0o644))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	assert.Contains(t, paths, filepath.Join(shallow, ".bashrc"))
+	assert.NotContains(t, paths, filepath.Join(deep, ".gitconfig"))
+}
+
+func TestScanDangerousWriteDenyPaths_SkipsNodeModules(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	nm := filepath.Join(base, "node_modules", "evil")
+	require.NoError(t, os.MkdirAll(nm, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nm, ".gitconfig"), nil, 0o644))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	for _, p := range paths {
+		assert.NotContains(t, p, "node_modules")
+	}
+}
+
+func TestScanDangerousWriteDenyPaths_AllowGitConfig(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	gitDir := filepath.Join(sub, ".git")
+	require.NoError(t, os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "config"), nil, 0o644))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, true, 3)
+	require.NoError(t, err)
+	assert.Contains(t, paths, filepath.Join(gitDir, "hooks"))
+	assert.NotContains(t, paths, filepath.Join(gitDir, "config"))
+}
+
+func TestScanDangerousWriteDenyPaths_ZeroDepth(t *testing.T) {
+	t.Parallel()
+	paths, err := ScanDangerousWriteDenyPaths(t.TempDir(), false, 0)
+	require.NoError(t, err)
+	assert.Empty(t, paths)
 }

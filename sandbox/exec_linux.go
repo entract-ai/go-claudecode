@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // Linux-specific types for bubblewrap mount handling
@@ -16,8 +18,33 @@ type mount struct {
 	target string
 }
 
+// detectWSLVersion reads procVersionPath to detect WSL.
+// Returns "1" for WSL1, the version string for WSL2+, or "" for native Linux.
+func detectWSLVersion(procVersionPath string) string {
+	data, err := os.ReadFile(procVersionPath)
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	upper := strings.ToUpper(content)
+	if idx := strings.Index(upper, "WSL"); idx >= 0 && idx+3 < len(upper) {
+		rest := upper[idx+3:]
+		if len(rest) > 0 && rest[0] >= '1' && rest[0] <= '9' {
+			return string(rest[0])
+		}
+	}
+	if strings.Contains(strings.ToLower(content), "microsoft") {
+		return "1"
+	}
+	return ""
+}
+
 // commandContext implements Linux sandboxing using bubblewrap.
 func (p *Policy) commandContext(ctx context.Context, name string, arg ...string) (*exec.Cmd, error) {
+	if wslVer := detectWSLVersion("/proc/version"); wslVer == "1" {
+		return nil, fmt.Errorf("sandbox: WSL1 is not supported; please upgrade to WSL2 or later")
+	}
+
 	bwrapPath, err := exec.LookPath("bwrap")
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: bwrap not found: %w", err)
@@ -51,6 +78,33 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 	}
 
 	return cmd, nil
+}
+
+// findSymlinkInPath walks path components using os.Lstat (no symlink following).
+// If any component is a symlink within one of the allowedWritePaths, returns
+// that symlink's path. This prevents symlink replacement attacks where an attacker
+// replaces a symlink target to bypass deny rules.
+func findSymlinkInPath(targetPath string, allowedWritePaths []string) string {
+	parts := strings.Split(filepath.Clean(targetPath), string(filepath.Separator))
+	current := "/"
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			break
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			for _, allowed := range allowedWritePaths {
+				if strings.HasPrefix(current, allowed+"/") || current == allowed {
+					return current
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // bubblewrapArgs builds the argument list for bwrap.
@@ -184,21 +238,42 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 	}
 	args = append(args, "--chdir", workdir)
 
+	// Collect allowed write paths for symlink checking
+	var allowedWritePaths []string
+	for _, m := range policy.ReadWriteMounts {
+		if canon, err := canonicalPath(m.Source); err == nil {
+			allowedWritePaths = append(allowedWritePaths, canon)
+		}
+	}
+	allowedWritePaths = append(allowedWritePaths, workdir)
+
 	// Deny-within-allow: re-mount specific paths read-only within writable mounts.
 	// This must come after all writable mounts so the read-only bind takes precedence.
 	for _, denyPath := range policy.DenyWritePaths {
 		canonDeny, err := canonicalPath(denyPath)
 		if err != nil {
-			// Path doesn't exist yet — mount /dev/null read-only at the raw path
-			// to prevent creation. The path will appear as an empty regular file
-			// inside the sandbox (not absent). We use the raw path because
-			// canonicalization requires the path to exist; bubblewrap resolves
-			// mount targets within its mount namespace.
+			// Path doesn't exist -- check for symlinks in the path
+			if sym := findSymlinkInPath(denyPath, allowedWritePaths); sym != "" {
+				args = append(args, "--ro-bind", "/dev/null", sym)
+				continue
+			}
 			args = append(args, "--ro-bind", "/dev/null", denyPath)
+			continue
+		}
+		// Check for symlinks in the resolved path within writable areas
+		if sym := findSymlinkInPath(canonDeny, allowedWritePaths); sym != "" {
+			args = append(args, "--ro-bind", "/dev/null", sym)
 			continue
 		}
 		// Re-bind as read-only to override the parent writable mount
 		args = append(args, "--ro-bind", canonDeny, canonDeny)
+	}
+
+	// Always hide /etc/ssh/ssh_config.d if it exists to avoid SSH permission
+	// errors in OrbStack. SSH is strict about config file ownership and it
+	// can appear wrong inside the sandbox.
+	if info, err := os.Stat("/etc/ssh/ssh_config.d"); err == nil && info.IsDir() {
+		args = append(args, "--tmpfs", "/etc/ssh/ssh_config.d")
 	}
 
 	// Deny-read: hide specific paths from read access.

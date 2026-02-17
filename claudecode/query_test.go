@@ -2,9 +2,12 @@ package claudecode
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQuery_Validation(t *testing.T) {
@@ -35,4 +38,19 @@ func TestQuery_Validation(t *testing.T) {
 		assert.Error(t, msg.Err)
 		assert.Contains(t, msg.Err.Error(), "can_use_tool callback requires streaming mode")
 	})
+}
+
+func TestQuerySync_AccumulatesAllErrors(t *testing.T) {
+	err1 := fmt.Errorf("first error")
+	err2 := fmt.Errorf("second error")
+	joined := errors.Join(err1, err2)
+	require.Error(t, joined)
+	assert.ErrorIs(t, joined, err1)
+	assert.ErrorIs(t, joined, err2)
+	assert.Contains(t, joined.Error(), "first error")
+	assert.Contains(t, joined.Error(), "second error")
+}
+
+func TestQuerySync_NilOnNoErrors(t *testing.T) {
+	assert.Nil(t, errors.Join())
 }

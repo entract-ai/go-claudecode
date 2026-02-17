@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -58,17 +59,17 @@ func Query(ctx context.Context, prompt string, opts ...Option) <-chan MessageOrE
 // QuerySync blocks until the query completes and returns all messages.
 func QuerySync(ctx context.Context, prompt string, opts ...Option) ([]Message, error) {
 	var messages []Message
-	var lastErr error
+	var errs []error
 
 	for msg := range Query(ctx, prompt, opts...) {
 		if msg.Err != nil {
-			lastErr = msg.Err
+			errs = append(errs, msg.Err)
 			continue
 		}
 		messages = append(messages, msg.Message)
 	}
 
-	return messages, lastErr
+	return messages, errors.Join(errs...)
 }
 
 // QueryWithInput performs a query with a streaming input channel.

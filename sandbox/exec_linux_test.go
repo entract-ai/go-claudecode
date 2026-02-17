@@ -256,7 +256,6 @@ func TestDangerousWriteDenyPaths(t *testing.T) {
 
 	// Should include dangerous files
 	assert.Contains(t, paths, "/home/user/project/.gitconfig")
-	assert.Contains(t, paths, "/home/user/project/.gitattributes")
 	assert.Contains(t, paths, "/home/user/project/.bashrc")
 	assert.Contains(t, paths, "/home/user/project/.zshrc")
 	assert.Contains(t, paths, "/home/user/project/.mcp.json")
@@ -270,7 +269,6 @@ func TestDangerousWriteDenyPaths(t *testing.T) {
 	// Should include git paths
 	assert.Contains(t, paths, "/home/user/project/.git/hooks")
 	assert.Contains(t, paths, "/home/user/project/.git/config")
-	assert.Contains(t, paths, "/home/user/project/.git/info")
 }
 
 func TestDangerousWriteDenyPaths_AllowGitConfig(t *testing.T) {
@@ -331,4 +329,103 @@ func TestBubblewrapArgs_NormalProcMount(t *testing.T) {
 		}
 	}
 	assert.True(t, foundProc, "Should mount --proc /proc in normal mode")
+}
+
+func TestDetectWSLVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		content  string
+		expected string
+	}{
+		{"native linux", "Linux version 6.5.0-44-generic (buildd@lcy02-amd64-080)", ""},
+		{"WSL2 explicit", "Linux version 5.15.90.1-microsoft-standard-WSL2", "2"},
+		{"WSL1 microsoft keyword", "Linux version 4.4.0-19041-Microsoft", "1"},
+		{"WSL3 future", "Linux version 6.0.0-microsoft-standard-WSL3", "3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := filepath.Join(t.TempDir(), "version")
+			require.NoError(t, os.WriteFile(tmp, []byte(tt.content), 0o644))
+			assert.Equal(t, tt.expected, detectWSLVersion(tmp))
+		})
+	}
+}
+
+func TestDetectWSLVersion_MissingFile(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", detectWSLVersion("/nonexistent/path"))
+}
+
+func TestFindSymlinkInPath(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real_dir")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	linkPath := filepath.Join(base, "link")
+	require.NoError(t, os.Symlink(realDir, linkPath))
+
+	// Symlink within allowed write path: should be detected
+	result := findSymlinkInPath(filepath.Join(linkPath, "sub", "file"), []string{base})
+	assert.Equal(t, linkPath, result)
+
+	// Symlink NOT within allowed write path: should return ""
+	result = findSymlinkInPath(filepath.Join(linkPath, "sub", "file"), []string{"/other"})
+	assert.Equal(t, "", result)
+}
+
+func TestFindSymlinkInPath_NoSymlinks(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	result := findSymlinkInPath(filepath.Join(sub, "file"), []string{base})
+	assert.Equal(t, "", result)
+}
+
+func TestBubblewrapArgs_SymlinkDenyPath(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	symlink := filepath.Join(base, ".claude")
+	require.NoError(t, os.Symlink(realDir, symlink))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = base
+	policy.AllowAllReads = true
+	policy.DenyWritePaths = []string{filepath.Join(symlink, "commands")}
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// Should mount /dev/null at the symlink to block it
+	found := false
+	for i, arg := range args {
+		if arg == "--ro-bind" && i+1 < len(args) && args[i+1] == "/dev/null" && i+2 < len(args) && args[i+2] == symlink {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "Should mount /dev/null at symlink within writable path")
+}
+
+func TestBubblewrapArgs_HidesEtcSshConfigD(t *testing.T) {
+	t.Parallel()
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.AllowAllReads = true
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+	if PathExists("/etc/ssh/ssh_config.d") {
+		found := false
+		for i, arg := range args {
+			if arg == "--tmpfs" && i+1 < len(args) && args[i+1] == "/etc/ssh/ssh_config.d" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "Should hide /etc/ssh/ssh_config.d with tmpfs when it exists")
+	}
 }

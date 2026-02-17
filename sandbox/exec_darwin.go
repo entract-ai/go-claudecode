@@ -137,7 +137,7 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 	// Create and add temporary directory if requested
 	var tmpDir string
 	if policy.ProvideTmp {
-		tmpDir, err = os.MkdirTemp("", "praxis-sandbox-*")
+		tmpDir, err = os.MkdirTemp("", "go-sandbox-*")
 		if err != nil {
 			return nil, "", "", fmt.Errorf("create temp directory: %w", err)
 		}
@@ -161,10 +161,10 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 	}
 
 	// Generate unique log tag for violation tracking
-	logTag := fmt.Sprintf("praxis-%d-%s", time.Now().Unix(), randomString(8))
+	logTag := fmt.Sprintf("sandbox-%d-%s", time.Now().Unix(), randomString(8))
 
 	// Inject log tag into base policy
-	fullPolicy := strings.ReplaceAll(seatbeltBasePolicy, "praxis-LOGTAG", logTag)
+	fullPolicy := strings.ReplaceAll(seatbeltBasePolicy, "sandbox-LOGTAG", logTag)
 
 	// Build Seatbelt policy string
 	var policyBuilder strings.Builder

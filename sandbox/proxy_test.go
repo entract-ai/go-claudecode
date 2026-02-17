@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -509,6 +510,14 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 	// Should have gRPC proxy vars
 	assert.Contains(t, envMap, "GRPC_PROXY", "Should set GRPC_PROXY")
 	assert.Contains(t, envMap, "grpc_proxy", "Should set grpc_proxy")
+
+	// Should have Google Cloud SDK proxy vars
+	assert.Contains(t, envMap, "CLOUDSDK_PROXY_TYPE")
+	assert.Equal(t, "https", envMap["CLOUDSDK_PROXY_TYPE"])
+	assert.Contains(t, envMap, "CLOUDSDK_PROXY_ADDRESS")
+	assert.Equal(t, "127.0.0.1", envMap["CLOUDSDK_PROXY_ADDRESS"])
+	assert.Contains(t, envMap, "CLOUDSDK_PROXY_PORT")
+	assert.NotEmpty(t, envMap["CLOUDSDK_PROXY_PORT"])
 }
 
 func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
@@ -528,7 +537,11 @@ func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
 			assert.Contains(t, e, "nc")
 		}
 	}
-	assert.True(t, foundGitSSH, "Should have GIT_SSH_COMMAND on macOS")
+	if runtime.GOOS == "darwin" {
+		assert.True(t, foundGitSSH, "Should have GIT_SSH_COMMAND on macOS")
+	} else {
+		assert.False(t, foundGitSSH, "Should NOT have GIT_SSH_COMMAND on Linux")
+	}
 }
 
 func TestBidirectionalCopy_DoesNotClose(t *testing.T) {
