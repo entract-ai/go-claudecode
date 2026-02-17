@@ -783,14 +783,20 @@ func formatSOCKSAddress(addr net.Addr) string {
 	}
 }
 
+// closeWriter is implemented by connections that support half-close (signaling
+// write-side EOF without closing the full connection). Both *net.TCPConn and
+// *net.UnixConn implement this interface.
+type closeWriter interface {
+	CloseWrite() error
+}
+
 // bidirectionalCopy copies data bidirectionally between two connections.
 // It returns when both directions have finished or encountered an error.
 // The caller is responsible for closing the connections (typically via defer).
 //
-// Half-close (CloseWrite) is only performed for TCP connections to signal EOF
-// to the peer. For Unix domain socket connections (Linux proxy), half-close is
-// not performed; the copy still terminates correctly when the read side returns
-// EOF or error, but the peer may not receive an explicit write-shutdown signal.
+// When one direction finishes, CloseWrite is called on the destination to
+// signal EOF to the peer. This works for both TCP connections (macOS proxy)
+// and Unix domain sockets (Linux proxy) via the closeWriter interface.
 func bidirectionalCopy(dst, src net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -798,9 +804,11 @@ func bidirectionalCopy(dst, src net.Conn) {
 	copy := func(dst, src net.Conn) {
 		defer wg.Done()
 		io.Copy(dst, src)
-		// Close write side to signal EOF to peer
-		if tcpConn, ok := dst.(*net.TCPConn); ok {
-			tcpConn.CloseWrite()
+		// Signal write-side EOF to peer. This unblocks the other direction's
+		// io.Copy read, preventing a deadlock where bidirectionalCopy waits
+		// on wg.Wait() while the other goroutine blocks in Read().
+		if cw, ok := dst.(closeWriter); ok {
+			cw.CloseWrite()
 		}
 	}
 

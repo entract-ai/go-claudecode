@@ -511,6 +511,56 @@ func TestBidirectionalCopy_DoesNotClose(t *testing.T) {
 		"bidirectionalCopy must not call Close on src connection")
 }
 
+// closeWriteTracker wraps a net.Conn and tracks CloseWrite() calls.
+// Used to verify bidirectionalCopy signals half-close via the closeWriter interface.
+type closeWriteTracker struct {
+	net.Conn
+	mu              sync.Mutex
+	closeWriteCount int
+}
+
+func (c *closeWriteTracker) CloseWrite() error {
+	c.mu.Lock()
+	c.closeWriteCount++
+	c.mu.Unlock()
+	// Don't actually close -- net.Pipe doesn't support CloseWrite
+	return nil
+}
+
+func (c *closeWriteTracker) CloseWriteCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeWriteCount
+}
+
+func TestBidirectionalCopy_CallsCloseWrite(t *testing.T) {
+	t.Parallel()
+
+	server, client := net.Pipe()
+
+	// Wrap with closeWriteTracker to verify CloseWrite is called
+	serverTracker := &closeWriteTracker{Conn: server}
+	clientTracker := &closeWriteTracker{Conn: client}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bidirectionalCopy(serverTracker, clientTracker)
+	}()
+
+	// Close underlying connections to trigger EOF
+	client.Close()
+	server.Close()
+	<-done
+
+	// bidirectionalCopy should call CloseWrite on both sides via the
+	// closeWriter interface (preventing deadlocks on Unix domain sockets)
+	assert.Greater(t, serverTracker.CloseWriteCount(), 0,
+		"bidirectionalCopy should call CloseWrite on dst via closeWriter interface")
+	assert.Greater(t, clientTracker.CloseWriteCount(), 0,
+		"bidirectionalCopy should call CloseWrite on src via closeWriter interface")
+}
+
 // Test helpers
 
 // testHTTPServer is a simple HTTP server for testing proxy functionality.
