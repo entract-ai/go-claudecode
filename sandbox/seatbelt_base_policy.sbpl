@@ -1,5 +1,5 @@
 (version 1)
-(deny default (with message "praxis-LOGTAG"))
+(deny default (with message "sandbox-LOGTAG"))
 
 ; Base Seatbelt policy for sandboxed command execution.
 ;
@@ -11,7 +11,7 @@
 ; that vary across macOS versions and could silently undermine our deny-by-default
 ; security model. All necessary permissions are explicitly allowed below.
 ;
-; LogTag: praxis-LOGTAG (replaced at runtime with unique identifier)
+; LogTag: sandbox-LOGTAG (replaced at runtime with unique identifier)
 
 ; Essential process operations
 (allow process-exec)

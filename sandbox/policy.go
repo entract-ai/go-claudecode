@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Policy defines the security boundaries for sandboxed command execution via bubblewrap.
@@ -308,7 +310,6 @@ func DefaultPolicy() *Policy {
 var dangerousFiles = []string{
 	".gitconfig",
 	".gitmodules",
-	".gitattributes", // can define filter/diff drivers that execute arbitrary commands
 	".bashrc",
 	".bash_profile",
 	".zshrc",
@@ -351,7 +352,6 @@ func DangerousDirectoriesList() []string {
 func DangerousGitPaths(allowGitConfig bool) []string {
 	paths := []string{
 		".git/hooks",
-		".git/info", // contains exclude, attributes, and grafts files that alter git behavior
 	}
 	if !allowGitConfig {
 		paths = append(paths, ".git/config")
@@ -375,6 +375,101 @@ func DangerousWriteDenyPaths(baseDir string, allowGitConfig bool) []string {
 		paths = append(paths, filepath.Join(baseDir, g))
 	}
 	return paths
+}
+
+// ScanDangerousWriteDenyPaths walks baseDir up to maxDepth levels deep,
+// finding dangerous files and directories in subdirectories. This
+// supplements DangerousWriteDenyPaths (which covers only the base directory)
+// by finding nested dangerous files like subproject/.gitconfig.
+//
+// Dangerous directories at depth 1 may overlap with DangerousWriteDenyPaths
+// results. Callers combining both should deduplicate the merged list.
+//
+// Skips node_modules directories. Uses case-insensitive matching on macOS
+// to account for APFS default behavior.
+func ScanDangerousWriteDenyPaths(baseDir string, allowGitConfig bool, maxDepth int) ([]string, error) {
+	if maxDepth <= 0 {
+		return nil, nil
+	}
+
+	var results []string
+	seen := make(map[string]struct{})
+	baseDir = filepath.Clean(baseDir)
+	baseDepth := strings.Count(baseDir, string(filepath.Separator))
+
+	err := filepath.WalkDir(baseDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		depth := strings.Count(filepath.Clean(path), string(filepath.Separator)) - baseDepth
+		if depth == 0 {
+			return nil
+		}
+		name := d.Name()
+
+		if d.IsDir() {
+			if matchFilename(name, "node_modules") {
+				return filepath.SkipDir
+			}
+			if depth > maxDepth {
+				return filepath.SkipDir
+			}
+			for _, dd := range dangerousDirectories {
+				if matchFilename(name, filepath.Base(dd)) {
+					// For multi-component patterns like ".claude/commands",
+					// check the parent too
+					if strings.Contains(dd, "/") {
+						parent := filepath.Base(filepath.Dir(dd))
+						if matchFilename(filepath.Base(filepath.Dir(path)), parent) {
+							addUnique(&results, seen, path)
+							return filepath.SkipDir
+						}
+					} else {
+						addUnique(&results, seen, path)
+						return filepath.SkipDir
+					}
+				}
+			}
+			// Check .git subdirectories
+			if matchFilename(name, "hooks") {
+				if matchFilename(filepath.Base(filepath.Dir(path)), ".git") {
+					addUnique(&results, seen, path)
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+
+		// Files: skip depth 1 (direct children handled by DangerousWriteDenyPaths)
+		if depth <= 1 {
+			return nil
+		}
+
+		for _, df := range dangerousFiles {
+			if matchFilename(name, df) {
+				addUnique(&results, seen, path)
+				return nil
+			}
+		}
+
+		// .git/config
+		if !allowGitConfig && matchFilename(name, "config") {
+			if matchFilename(filepath.Base(filepath.Dir(path)), ".git") {
+				addUnique(&results, seen, path)
+			}
+		}
+
+		return nil
+	})
+
+	return results, err
+}
+
+func addUnique(results *[]string, seen map[string]struct{}, path string) {
+	if _, ok := seen[path]; !ok {
+		seen[path] = struct{}{}
+		*results = append(*results, path)
+	}
 }
 
 // PathExists checks if a path exists. Returns false for any error, including permission denied.

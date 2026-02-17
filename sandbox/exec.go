@@ -265,6 +265,7 @@ var proxyEnvVarNames = []string{
 	"DOCKER_HTTP_PROXY", "DOCKER_HTTPS_PROXY", "DOCKER_NO_PROXY",
 	"GRPC_PROXY", "grpc_proxy",
 	"GIT_SSH_COMMAND",
+	"CLOUDSDK_PROXY_TYPE", "CLOUDSDK_PROXY_ADDRESS", "CLOUDSDK_PROXY_PORT",
 }
 
 // filterProxyEnvVars removes all proxy-related environment variables from the

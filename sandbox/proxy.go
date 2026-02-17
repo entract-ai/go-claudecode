@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -240,13 +241,24 @@ func (p *NetworkProxy) Env() []string {
 
 		// RSYNC proxy expects host:port format without scheme
 		"RSYNC_PROXY="+socksAddr,
-
-		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy.
-		// The -X 5 -x flags are BSD/macOS nc extensions. On Linux with GNU netcat,
-		// this will fail-closed (git SSH connections are blocked, not bypassed).
-		// Git-over-HTTPS still works via HTTP_PROXY on all platforms.
-		fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
 	)
+
+	// Google Cloud SDK proxy configuration
+	httpHost := strings.TrimPrefix(httpAddr, "http://")
+	if _, httpPort, err := net.SplitHostPort(httpHost); err == nil {
+		env = append(env,
+			"CLOUDSDK_PROXY_TYPE=http",
+			"CLOUDSDK_PROXY_ADDRESS=127.0.0.1",
+			"CLOUDSDK_PROXY_PORT="+httpPort,
+		)
+	}
+
+	// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy.
+	// Only on macOS -- the -X 5 -x flags are BSD nc extensions.
+	// Git-over-HTTPS still works on all platforms via HTTP_PROXY.
+	if runtime.GOOS == "darwin" {
+		env = append(env, fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr))
+	}
 
 	return env
 }
