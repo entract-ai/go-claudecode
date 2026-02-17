@@ -69,13 +69,9 @@ func TestNetworkProxy_StartStop(t *testing.T) {
 	assert.True(t, foundHTTP, "Should have HTTP_PROXY environment variable")
 	assert.True(t, foundSOCKS, "Should have ALL_PROXY environment variable")
 
-	// Close should succeed
-	err = proxy.Close()
-	assert.NoError(t, err)
-
-	// Close should be idempotent
-	err = proxy.Close()
-	assert.NoError(t, err)
+	// Close should succeed (idempotent)
+	proxy.Close()
+	proxy.Close()
 }
 
 func TestNetworkProxy_MultipleInstances(t *testing.T) {

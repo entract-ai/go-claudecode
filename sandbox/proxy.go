@@ -254,9 +254,7 @@ func (p *NetworkProxy) Env() []string {
 // Close gracefully shuts down the proxy servers and cleans up resources.
 // It waits for all active connections to complete before returning.
 // Close is safe to call multiple times (idempotent).
-func (p *NetworkProxy) Close() error {
-	var closeErr error
-
+func (p *NetworkProxy) Close() {
 	p.closeOnce.Do(func() {
 		// Signal shutdown to all goroutines
 		close(p.closed)
@@ -283,8 +281,6 @@ func (p *NetworkProxy) Close() error {
 		// Wait for all connection handlers to finish
 		p.wg.Wait()
 	})
-
-	return closeErr
 }
 
 // serveHTTP runs the HTTP proxy server. It blocks until the listener is closed.
@@ -305,6 +301,7 @@ func (p *NetworkProxy) serveHTTP(ctx context.Context) error {
 
 // serveSOCKS runs the SOCKS5 proxy server. It blocks until the listener is closed.
 func (p *NetworkProxy) serveSOCKS(ctx context.Context) error {
+	var tempDelay time.Duration
 	for {
 		conn, err := p.socksLn.Accept()
 		if err != nil {
@@ -312,14 +309,27 @@ func (p *NetworkProxy) serveSOCKS(ctx context.Context) error {
 			case <-p.closed:
 				return nil
 			default:
-				// Temporary error, continue accepting
+				// Exponential backoff on transient accept errors, matching
+				// the approach used by net/http.Server.Serve.
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if tempDelay > 1*time.Second {
+					tempDelay = 1 * time.Second
+				}
+				time.Sleep(tempDelay)
 				continue
 			}
 		}
+		tempDelay = 0
 
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			// Per-connection errors are expected (client disconnect, timeout)
+			// and not actionable at the server level.
 			p.handleSOCKS(conn)
 		}()
 	}
