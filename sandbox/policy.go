@@ -61,9 +61,11 @@ type Policy struct {
 	// AllowAllReads is true. This provides a "deny-within-allow" model for reads.
 	//
 	// On Linux, directories are hidden with --tmpfs (empty tmpfs overlay) and
-	// files are hidden with --ro-bind /dev/null. Non-existent paths are skipped.
-	// On macOS, corresponding Seatbelt deny file-read* rules are generated using
-	// parameter indirection.
+	// files are hidden with --ro-bind /dev/null. Non-existent paths are skipped
+	// (bubblewrap requires paths to exist for bind mounts).
+	// On macOS, Seatbelt deny file-read* rules are generated using parameter
+	// indirection. Non-existent paths are still enforced since Seatbelt rules
+	// operate on path strings, not filesystem state.
 	DenyReadPaths []string
 
 	// WorkDir specifies the working directory for the sandboxed command.
