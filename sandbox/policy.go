@@ -36,11 +36,14 @@ type Policy struct {
 	ReadWriteMounts []Mount
 
 	// DenyWritePaths are paths within writable mounts that should be denied write access.
-	// This implements a "deny-within-allow" model: paths listed here are re-mounted
-	// read-only even if they fall within a ReadWriteMount or the WorkDir.
+	// This implements a "deny-within-allow" model: paths listed here are blocked from
+	// writes even if they fall within a ReadWriteMount or the WorkDir.
 	//
 	// On Linux, these paths are re-bound as read-only over the writable mount.
-	// On macOS, corresponding Seatbelt deny rules are generated.
+	// If a path does not exist, /dev/null is mounted at the path to prevent creation.
+	// On macOS, corresponding Seatbelt deny rules are generated using parameter
+	// indirection. Non-existent paths are denied by pattern (the rule is harmless
+	// if the path never exists).
 	//
 	// Common use case: blocking writes to dangerous files (.gitconfig, .bashrc,
 	// .git/hooks) within an otherwise-writable working directory.
@@ -267,10 +270,11 @@ func DefaultPolicy() *Policy {
 	return policy
 }
 
-// DangerousFiles lists files that should be protected from writes in sandboxed environments.
+// dangerousFiles lists files that should be protected from writes in sandboxed environments.
 // These are configuration files that could be exploited to achieve code execution
 // outside the sandbox (e.g., by installing git hooks or modifying shell profiles).
-var DangerousFiles = []string{
+// Use DangerousFilesList() to get a copy safe for modification.
+var dangerousFiles = []string{
 	".gitconfig",
 	".gitmodules",
 	".bashrc",
@@ -282,14 +286,31 @@ var DangerousFiles = []string{
 	".mcp.json",
 }
 
-// DangerousDirectories lists directories that should be protected from writes.
+// dangerousDirectories lists directories that should be protected from writes.
 // These directories contain configuration that could be exploited to achieve
 // code execution outside the sandbox.
-var DangerousDirectories = []string{
+// Use DangerousDirectoriesList() to get a copy safe for modification.
+var dangerousDirectories = []string{
 	".vscode",
 	".idea",
 	".claude/commands",
 	".claude/agents",
+}
+
+// DangerousFilesList returns the list of files that should be protected from writes.
+// Returns a new copy each time, safe for the caller to modify.
+func DangerousFilesList() []string {
+	result := make([]string, len(dangerousFiles))
+	copy(result, dangerousFiles)
+	return result
+}
+
+// DangerousDirectoriesList returns the list of directories that should be protected from writes.
+// Returns a new copy each time, safe for the caller to modify.
+func DangerousDirectoriesList() []string {
+	result := make([]string, len(dangerousDirectories))
+	copy(result, dangerousDirectories)
+	return result
 }
 
 // DangerousGitPaths returns paths within a .git directory that should always
@@ -305,14 +326,14 @@ func DangerousGitPaths(allowGitConfig bool) []string {
 
 // DangerousWriteDenyPaths returns all paths that should be denied write access
 // relative to the given base directory. The returned paths are absolute.
-// This is a convenience function that combines DangerousFiles, DangerousDirectories,
+// This is a convenience function that combines dangerousFiles, dangerousDirectories,
 // and DangerousGitPaths into a single list of absolute paths.
 func DangerousWriteDenyPaths(baseDir string, allowGitConfig bool) []string {
 	var paths []string
-	for _, f := range DangerousFiles {
+	for _, f := range dangerousFiles {
 		paths = append(paths, filepath.Join(baseDir, f))
 	}
-	for _, d := range DangerousDirectories {
+	for _, d := range dangerousDirectories {
 		paths = append(paths, filepath.Join(baseDir, d))
 	}
 	for _, g := range DangerousGitPaths(allowGitConfig) {

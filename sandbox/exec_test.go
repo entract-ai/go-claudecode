@@ -230,6 +230,38 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+func TestDangerousFilesList_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	list1 := DangerousFilesList()
+	list2 := DangerousFilesList()
+
+	require.Equal(t, list1, list2, "Both calls should return identical lists")
+	require.NotEmpty(t, list1, "DangerousFilesList should not be empty")
+
+	// Mutating the returned slice must not affect future calls
+	list1[0] = "MUTATED"
+	list3 := DangerousFilesList()
+	assert.NotEqual(t, "MUTATED", list3[0],
+		"Modifying returned slice must not affect the source list")
+}
+
+func TestDangerousDirectoriesList_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	list1 := DangerousDirectoriesList()
+	list2 := DangerousDirectoriesList()
+
+	require.Equal(t, list1, list2, "Both calls should return identical lists")
+	require.NotEmpty(t, list1, "DangerousDirectoriesList should not be empty")
+
+	// Mutating the returned slice must not affect future calls
+	list1[0] = "MUTATED"
+	list3 := DangerousDirectoriesList()
+	assert.NotEqual(t, "MUTATED", list3[0],
+		"Modifying returned slice must not affect the source list")
+}
+
 func TestSeatbeltBasePolicy_NoBsdSbImport(t *testing.T) {
 	t.Parallel()
 

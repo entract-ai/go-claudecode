@@ -10,11 +10,33 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// closeTracker wraps a net.Conn and counts how many times Close() is called
+// through the wrapper. Direct closes on the underlying connection are not tracked.
+type closeTracker struct {
+	net.Conn
+	mu         sync.Mutex
+	closeCount int
+}
+
+func (c *closeTracker) Close() error {
+	c.mu.Lock()
+	c.closeCount++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *closeTracker) CloseCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeCount
+}
 
 func TestNetworkProxy_StartStop(t *testing.T) {
 	t.Parallel()
@@ -419,8 +441,13 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 	assert.Contains(t, envMap, "FTP_PROXY", "Should set FTP_PROXY")
 	assert.Contains(t, envMap, "ftp_proxy", "Should set ftp_proxy")
 
-	// Should have RSYNC_PROXY
-	assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY")
+	// RSYNC_PROXY only set on macOS (requires TCP host:port, not Unix socket paths)
+	if runtime.GOOS == "darwin" {
+		assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY on macOS")
+	} else {
+		assert.NotContains(t, envMap, "RSYNC_PROXY",
+			"Should not set RSYNC_PROXY on Linux (Unix socket path is incompatible with rsync)")
+	}
 
 	// Should have Docker proxy vars
 	assert.Contains(t, envMap, "DOCKER_HTTP_PROXY", "Should set DOCKER_HTTP_PROXY")
@@ -455,32 +482,33 @@ func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
 	assert.True(t, foundGitSSH, "Should have GIT_SSH_COMMAND on macOS")
 }
 
-func TestBidirectionalCopy_NoDoubleClose(t *testing.T) {
+func TestBidirectionalCopy_DoesNotClose(t *testing.T) {
 	t.Parallel()
 
-	// Create a pipe-based connection pair to test bidirectionalCopy
 	server, client := net.Pipe()
 
-	// Write data from client, then close to signal EOF
+	// Wrap connections in close trackers to count Close() calls
+	serverTracker := &closeTracker{Conn: server}
+	clientTracker := &closeTracker{Conn: client}
+
+	done := make(chan struct{})
 	go func() {
-		client.Write([]byte("hello"))
-		client.Close()
+		defer close(done)
+		bidirectionalCopy(serverTracker, clientTracker)
 	}()
 
-	// bidirectionalCopy should not close the connections itself;
-	// callers are responsible for closing via defer.
-	bidirectionalCopy(server, client)
+	// Close underlying connections directly (bypassing trackers) to unblock
+	// bidirectionalCopy. This simulates the caller's defer Close() pattern.
+	client.Close()
+	server.Close()
+	<-done
 
-	// After bidirectionalCopy returns, closing again must not panic.
-	// If bidirectionalCopy closed the connections, this would be a double-close.
-	// net.Pipe connections return an error on double-close but don't panic,
-	// so we verify bidirectionalCopy doesn't close by checking server is
-	// still usable for Close().
-	err := server.Close()
-	// With the fix, this should succeed (first close).
-	// Before the fix, bidirectionalCopy would have already closed it.
-	// net.Pipe.Close is idempotent so we just verify no panic occurred.
-	_ = err
+	// bidirectionalCopy must not call Close() on connections it receives.
+	// Callers handle connection lifecycle via defer.
+	assert.Equal(t, 0, serverTracker.CloseCount(),
+		"bidirectionalCopy must not call Close on dst connection")
+	assert.Equal(t, 0, clientTracker.CloseCount(),
+		"bidirectionalCopy must not call Close on src connection")
 }
 
 // Test helpers

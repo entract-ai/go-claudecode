@@ -70,17 +70,46 @@ func TestSeatbeltArgs_DenyWritePaths(t *testing.T) {
 
 	policyStr := args[2]
 
-	// Should contain deny file-write* for the path
+	// Should contain deny file-write* rule using parameter indirection
 	assert.Contains(t, policyStr, "deny file-write*",
 		"Should have deny file-write* rule for deny path")
+	assert.Contains(t, policyStr, `(param "DENY_WRITE_0")`,
+		"Deny paths should use parameter indirection to prevent injection")
 
-	// Should contain deny file-write-unlink for the path (prevents rename bypass)
-	assert.Contains(t, policyStr, "deny file-write-unlink",
-		"Should have deny file-write-unlink rule for deny path")
+	// The deny path must NOT appear directly in the policy string (injection prevention)
+	assert.NotContains(t, policyStr, denyPath,
+		"Deny paths must use parameter indirection, not direct string interpolation")
 
-	// The deny path should appear in the policy
-	assert.True(t, strings.Contains(policyStr, denyPath),
-		"Policy should reference the deny path")
+	// The deny path should be passed as a -D parameter
+	foundDenyParam := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-DDENY_WRITE_") && strings.Contains(arg, denyPath) {
+			foundDenyParam = true
+			break
+		}
+	}
+	assert.True(t, foundDenyParam, "Deny path should be passed as -D parameter")
+}
+
+func TestSeatbeltArgs_DenyPathInjection(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	// Path with quote character that could break S-expression syntax if interpolated directly
+	policy.DenyWritePaths = []string{tmpDir + `/evil"(allow file-write*)`}
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	// The policy string must not contain the injected S-expression
+	policyStr := args[2]
+	assert.NotContains(t, policyStr, `evil"(allow file-write*)`,
+		"Deny paths with special characters must not be interpolated into the policy string")
+	assert.Contains(t, policyStr, `(param "DENY_WRITE_0")`,
+		"Deny paths should use parameter indirection regardless of path content")
 }
 
 func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
@@ -99,7 +128,8 @@ func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
 
 	policyStr := args[2]
 
-	// Should have file-write-unlink deny for .git/hooks to prevent rename attack
-	assert.Contains(t, policyStr, "file-write-unlink",
-		"Should block file-write-unlink (rename/move) on deny paths")
+	// file-write* is a glob that covers all file-write operations including
+	// file-write-unlink (rename/move). A single deny rule is sufficient.
+	assert.Contains(t, policyStr, "deny file-write*",
+		"Should have deny file-write* rule covering all write ops including unlink")
 }

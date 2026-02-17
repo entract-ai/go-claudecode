@@ -190,18 +190,23 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("  (with message \"%s-write\"))\n", logTag))
 	}
 
-	// Deny-within-allow: block writes and moves (file-write-unlink) to specific paths
-	// within writable mounts. This prevents bypassing write restrictions via rename/move.
+	// Deny-within-allow: block writes to specific paths within writable mounts.
+	// Uses parameter indirection (like allow paths) to prevent S-expression injection
+	// from paths containing special characters (quotes, backslashes, parens).
+	var denyPaths []string
 	for _, denyPath := range policy.DenyWritePaths {
 		// Try to canonicalize; use as-is if path doesn't exist yet
 		canonDeny := denyPath
 		if resolved, err := canonicalPath(denyPath); err == nil {
 			canonDeny = resolved
 		}
-		// Deny all write operations (file-write*) to the subpath
-		policyBuilder.WriteString(fmt.Sprintf("(deny file-write*\n  (subpath \"%s\")\n  (with message \"%s-deny\"))\n", canonDeny, logTag))
-		// Also deny file-write-unlink (rename/move) to prevent bypass via mv
-		policyBuilder.WriteString(fmt.Sprintf("(deny file-write-unlink\n  (subpath \"%s\")\n  (with message \"%s-deny-unlink\"))\n", canonDeny, logTag))
+		denyPaths = append(denyPaths, canonDeny)
+	}
+	for i := range denyPaths {
+		// file-write* is a glob matching all file-write operations including
+		// file-write-data, file-write-create, file-write-unlink (rename/move),
+		// file-write-xattr, etc. A single deny rule covers all write vectors.
+		policyBuilder.WriteString(fmt.Sprintf("(deny file-write*\n  (subpath (param \"DENY_WRITE_%d\"))\n  (with message \"%s-deny\"))\n", i, logTag))
 	}
 
 	// Conditionally allow com.apple.trustd.agent for Go TLS certificate verification.
@@ -252,6 +257,11 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 	// Add -D parameter definitions for writable paths
 	for i, path := range writablePaths {
 		args = append(args, fmt.Sprintf("-DWRITABLE_ROOT_%d=%s", i, path))
+	}
+
+	// Add -D parameter definitions for deny write paths
+	for i, path := range denyPaths {
+		args = append(args, fmt.Sprintf("-DDENY_WRITE_%d=%s", i, path))
 	}
 
 	// Add separator and command

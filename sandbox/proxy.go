@@ -172,9 +172,6 @@ func (p *NetworkProxy) Env() []string {
 		"FTP_PROXY="+socksURL,
 		"ftp_proxy="+socksURL,
 
-		// RSYNC proxy (host:port format without scheme)
-		"RSYNC_PROXY="+socksAddr,
-
 		// Docker proxy
 		"DOCKER_HTTP_PROXY="+httpAddr,
 		"DOCKER_HTTPS_PROXY="+httpAddr,
@@ -184,10 +181,14 @@ func (p *NetworkProxy) Env() []string {
 		"grpc_proxy="+socksURL,
 	)
 
-	// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy (macOS only,
-	// where nc with SOCKS support is available).
+	// macOS-only proxy variables that require TCP host:port format.
+	// On Linux, proxy addresses are Unix socket paths which these tools don't understand.
 	if runtime.GOOS == "darwin" {
-		// Extract the host:port from the SOCKS address for nc
+		// RSYNC proxy expects host:port format without scheme
+		env = append(env, "RSYNC_PROXY="+socksAddr)
+
+		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy
+		// (macOS nc supports SOCKS proxying)
 		env = append(env,
 			fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
 		)
