@@ -714,3 +714,60 @@ func TestScanDangerousWriteDenyPaths_ZeroDepth(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, paths)
 }
+
+func TestScanDangerousWriteDenyPaths_DepthBoundary(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	// depth 1: base/a/
+	// depth 2: base/a/b/
+	// depth 3: base/a/b/c/
+	atDepth3 := filepath.Join(base, "a", "b", "c")
+	require.NoError(t, os.MkdirAll(atDepth3, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(atDepth3, ".bashrc"), nil, 0o644))
+
+	// Directory at depth 4 exceeds maxDepth so it is not entered.
+	atDepth4 := filepath.Join(base, "a", "b", "c", "d")
+	require.NoError(t, os.MkdirAll(atDepth4, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(atDepth4, ".bashrc"), nil, 0o644))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	// File inside directory at depth 3 is found (directory at depth 3 is entered)
+	assert.Contains(t, paths, filepath.Join(atDepth3, ".bashrc"))
+	// File inside directory at depth 4 is NOT found (directory exceeds maxDepth)
+	assert.NotContains(t, paths, filepath.Join(atDepth4, ".bashrc"))
+}
+
+func TestScanDangerousWriteDenyPaths_DangerousDirectoriesNested(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "subproject")
+	// Nested .vscode at depth 2
+	vscode := filepath.Join(sub, ".vscode")
+	require.NoError(t, os.MkdirAll(vscode, 0o755))
+	// Nested .idea at depth 2
+	idea := filepath.Join(sub, ".idea")
+	require.NoError(t, os.MkdirAll(idea, 0o755))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	assert.Contains(t, paths, vscode)
+	assert.Contains(t, paths, idea)
+}
+
+func TestScanDangerousWriteDenyPaths_ClaudeCommandsNested(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	sub := filepath.Join(base, "subproject")
+	// .claude/commands at depth 3
+	cmds := filepath.Join(sub, ".claude", "commands")
+	require.NoError(t, os.MkdirAll(cmds, 0o755))
+	// .claude/agents at depth 3
+	agents := filepath.Join(sub, ".claude", "agents")
+	require.NoError(t, os.MkdirAll(agents, 0o755))
+
+	paths, err := ScanDangerousWriteDenyPaths(base, false, 3)
+	require.NoError(t, err)
+	assert.Contains(t, paths, cmds)
+	assert.Contains(t, paths, agents)
+}
