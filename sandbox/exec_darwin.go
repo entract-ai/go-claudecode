@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -227,6 +228,9 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 	// Ancestor unlink protection: prevent renaming/unlinking ancestor directories
 	// of deny-write and deny-read paths. Without this, an attacker could rename a
 	// parent directory to bypass the deny rules, then recreate it without protections.
+	// The deny targets themselves don't need separate unlink protection because
+	// deny file-write* (with subpath) already covers file-write-unlink for the
+	// target and everything beneath it.
 	ancestorSet := make(map[string]struct{})
 	for _, p := range denyPaths {
 		for _, a := range ancestorDirectories(p, workdir) {
@@ -243,7 +247,7 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		ancestorPaths = append(ancestorPaths, a)
 	}
 	// Sort for deterministic output
-	sortStrings(ancestorPaths)
+	slices.Sort(ancestorPaths)
 	for i := range ancestorPaths {
 		policyBuilder.WriteString(fmt.Sprintf("(deny file-write-unlink\n  (literal (param \"DENY_ANCESTOR_%d\"))\n  (with message \"%s-ancestor\"))\n", i, logTag))
 	}
@@ -366,11 +370,3 @@ func ancestorDirectories(path, root string) []string {
 	return ancestors
 }
 
-// sortStrings sorts a string slice in place.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
-}

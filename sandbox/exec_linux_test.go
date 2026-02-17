@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,7 +123,7 @@ func TestBubblewrapArgs_DenyWritePaths(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = tmpDir
 	// Deny writes to a path within the writable working directory
-	denyPath := tmpDir + "/protected"
+	denyPath := filepath.Join(tmpDir, "protected")
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 	policy.DenyWritePaths = []string{denyPath}
 
@@ -174,7 +175,7 @@ func TestBubblewrapArgs_DenyReadPaths_Directory(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	secretDir := tmpDir + "/secrets"
+	secretDir := filepath.Join(tmpDir, "secrets")
 	require.NoError(t, os.MkdirAll(secretDir, 0o755))
 
 	policy := DefaultPolicy()
@@ -200,7 +201,7 @@ func TestBubblewrapArgs_DenyReadPaths_File(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	secretFile := tmpDir + "/secret.txt"
+	secretFile := filepath.Join(tmpDir, "secret.txt")
 	require.NoError(t, os.WriteFile(secretFile, []byte("secret"), 0o644))
 
 	policy := DefaultPolicy()

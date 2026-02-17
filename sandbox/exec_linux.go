@@ -210,7 +210,8 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 		canonDeny, err := canonicalPath(denyPath)
 		if err != nil {
-			continue
+			// Fall back to raw path (same as DenyWritePaths behavior)
+			canonDeny = denyPath
 		}
 		if info.IsDir() {
 			args = append(args, "--tmpfs", canonDeny)

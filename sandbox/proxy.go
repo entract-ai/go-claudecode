@@ -64,7 +64,7 @@ func validatePattern(pattern string) error {
 
 	// Strip port if present
 	host := pattern
-	if idx := lastIndexByte(pattern, ':'); idx >= 0 {
+	if idx := strings.LastIndexByte(pattern, ':'); idx >= 0 {
 		host = pattern[:idx]
 	}
 
@@ -500,7 +500,7 @@ func matchesPattern(pattern, host, port string) bool {
 	var patternHost, patternPort string
 
 	// Check if pattern contains a port
-	if idx := lastIndexByte(pattern, ':'); idx >= 0 {
+	if idx := strings.LastIndexByte(pattern, ':'); idx >= 0 {
 		// Pattern has a port
 		patternHost = pattern[:idx]
 		patternPort = pattern[idx+1:]
@@ -543,17 +543,6 @@ func matchesHost(pattern, host string) bool {
 	}
 
 	return false
-}
-
-// lastIndexByte finds the last occurrence of byte c in string s.
-// Returns -1 if not found.
-func lastIndexByte(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // handleSOCKS processes a SOCKS5 connection.

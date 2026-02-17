@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,7 +61,7 @@ func TestSeatbeltArgs_DenyWritePaths(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	denyPath := tmpDir + "/protected"
+	denyPath := filepath.Join(tmpDir, "protected")
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 
 	policy := DefaultPolicy()
@@ -101,7 +102,7 @@ func TestSeatbeltArgs_DenyPathInjection(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = tmpDir
 	// Path with quote character that could break S-expression syntax if interpolated directly
-	policy.DenyWritePaths = []string{tmpDir + `/evil"(allow file-write*)`}
+	policy.DenyWritePaths = []string{filepath.Join(tmpDir, `evil"(allow file-write*)`)}
 
 	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
 	require.NoError(t, err)
@@ -118,7 +119,7 @@ func TestSeatbeltArgs_DenyAfterAllowOrdering(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	denyPath := tmpDir + "/protected"
+	denyPath := filepath.Join(tmpDir, "protected")
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 
 	policy := DefaultPolicy()
@@ -146,7 +147,7 @@ func TestSeatbeltArgs_DenyReadPaths(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	secretDir := tmpDir + "/secrets"
+	secretDir := filepath.Join(tmpDir, "secrets")
 	require.NoError(t, os.MkdirAll(secretDir, 0o755))
 
 	policy := DefaultPolicy()
@@ -183,7 +184,7 @@ func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	gitHooksDir := tmpDir + "/.git/hooks"
+	gitHooksDir := filepath.Join(tmpDir, ".git", "hooks")
 	require.NoError(t, os.MkdirAll(gitHooksDir, 0o755))
 
 	policy := DefaultPolicy()
@@ -205,7 +206,7 @@ func TestSeatbeltArgs_AncestorUnlinkProtection(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	gitHooksDir := tmpDir + "/.git/hooks"
+	gitHooksDir := filepath.Join(tmpDir, ".git", "hooks")
 	require.NoError(t, os.MkdirAll(gitHooksDir, 0o755))
 
 	policy := DefaultPolicy()
@@ -222,7 +223,7 @@ func TestSeatbeltArgs_AncestorUnlinkProtection(t *testing.T) {
 		"Should have deny file-write-unlink rule for ancestor directories")
 
 	// Ancestor .git should be protected (between hooks and workdir)
-	gitDir := tmpDir + "/.git"
+	gitDir := filepath.Join(tmpDir, ".git")
 	foundGitAncestor := false
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-DDENY_ANCESTOR_") && strings.Contains(arg, gitDir) {
