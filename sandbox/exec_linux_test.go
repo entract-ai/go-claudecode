@@ -135,6 +135,7 @@ func TestDangerousWriteDenyPaths(t *testing.T) {
 
 	// Should include dangerous files
 	assert.Contains(t, paths, "/home/user/project/.gitconfig")
+	assert.Contains(t, paths, "/home/user/project/.gitattributes")
 	assert.Contains(t, paths, "/home/user/project/.bashrc")
 	assert.Contains(t, paths, "/home/user/project/.zshrc")
 	assert.Contains(t, paths, "/home/user/project/.mcp.json")
@@ -148,6 +149,7 @@ func TestDangerousWriteDenyPaths(t *testing.T) {
 	// Should include git paths
 	assert.Contains(t, paths, "/home/user/project/.git/hooks")
 	assert.Contains(t, paths, "/home/user/project/.git/config")
+	assert.Contains(t, paths, "/home/user/project/.git/info")
 }
 
 func TestDangerousWriteDenyPaths_AllowGitConfig(t *testing.T) {

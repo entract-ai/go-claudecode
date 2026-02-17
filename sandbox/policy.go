@@ -277,6 +277,7 @@ func DefaultPolicy() *Policy {
 var dangerousFiles = []string{
 	".gitconfig",
 	".gitmodules",
+	".gitattributes", // can define filter/diff drivers that execute arbitrary commands
 	".bashrc",
 	".bash_profile",
 	".zshrc",
@@ -317,7 +318,10 @@ func DangerousDirectoriesList() []string {
 // be protected from writes. The hooks directory is always protected; config
 // is protected unless allowGitConfig is true.
 func DangerousGitPaths(allowGitConfig bool) []string {
-	paths := []string{".git/hooks"}
+	paths := []string{
+		".git/hooks",
+		".git/info", // exclude file can hide malicious files from git status
+	}
 	if !allowGitConfig {
 		paths = append(paths, ".git/config")
 	}

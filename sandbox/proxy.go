@@ -131,6 +131,12 @@ func (p *NetworkProxy) SOCKSAddr() string {
 
 // noProxyAddresses lists destinations that should bypass the filtering proxy.
 // This includes localhost, link-local, and RFC 1918 private network ranges.
+//
+// Design note: private network ranges (10/8, 172.16/12, 192.168/16) bypass the
+// proxy intentionally. The proxy's purpose is filtering internet-bound traffic,
+// not restricting local network access. Sandboxed processes can reach hosts on
+// the local network without proxy filtering. If full network auditing is required,
+// use network namespace isolation (AllowNetwork=false) instead of proxy filtering.
 const noProxyAddresses = "localhost,127.0.0.1,::1,*.local,.local,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 // Env returns environment variables configuring HTTP and SOCKS5 proxies.
@@ -780,6 +786,11 @@ func formatSOCKSAddress(addr net.Addr) string {
 // bidirectionalCopy copies data bidirectionally between two connections.
 // It returns when both directions have finished or encountered an error.
 // The caller is responsible for closing the connections (typically via defer).
+//
+// Half-close (CloseWrite) is only performed for TCP connections to signal EOF
+// to the peer. For Unix domain socket connections (Linux proxy), half-close is
+// not performed; the copy still terminates correctly when the read side returns
+// EOF or error, but the peer may not receive an explicit write-shutdown signal.
 func bidirectionalCopy(dst, src net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)

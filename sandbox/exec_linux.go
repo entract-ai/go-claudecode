@@ -171,24 +171,14 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 	// breaking shared memory (IPC) and hostname-dependent programs (UTS).
 	// Upstream only unshares PID (always) and network (conditionally).
 	if !policy.AllowSharedNamespaces {
-		// Always unshare PID namespace for security isolation
 		args = append(args, "--unshare-pid")
-
-		// Network namespace: unshare unless explicitly allowed and no proxy
-		if policy.NetworkProxy != nil {
-			// Proxy-based filtering requires isolated network to force traffic through proxy
-			args = append(args, "--unshare-net")
-		} else if !policy.AllowNetwork {
-			args = append(args, "--unshare-net")
-		}
-	} else if policy.NetworkProxy != nil {
-		// Proxy-based filtering: isolate network namespace to force traffic through proxy
-		args = append(args, "--unshare-net")
-	} else if !policy.AllowNetwork {
-		// Shared namespaces allowed, but network specifically blocked
+	}
+	// Network namespace: always unshare when proxy is configured (to force traffic
+	// through proxy) or when network is blocked. This applies regardless of
+	// AllowSharedNamespaces since network isolation is a separate security concern.
+	if policy.NetworkProxy != nil || !policy.AllowNetwork {
 		args = append(args, "--unshare-net")
 	}
-	// else: both shared namespaces and network allowed - no unsharing
 
 	// Process lifecycle control
 	if !policy.AllowParentSurvival {
