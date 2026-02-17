@@ -1,0 +1,253 @@
+//go:build linux
+
+package sandbox
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+)
+
+// Linux-specific types for bubblewrap mount handling
+type mount struct {
+	flag   string
+	source string
+	target string
+}
+
+// commandContext implements Linux sandboxing using bubblewrap.
+func (p *Policy) commandContext(ctx context.Context, name string, arg ...string) (*exec.Cmd, error) {
+	bwrapPath, err := exec.LookPath("bwrap")
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: bwrap not found: %w", err)
+	}
+
+	// Build full argv (name + args)
+	argv := append([]string{name}, arg...)
+
+	// Generate bubblewrap arguments
+	bwrapArgs, err := bubblewrapArgs(p, name, argv)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: build bubblewrap args: %w", err)
+	}
+
+	// Create command: bwrap <bwrap-args> -- <command> <args>
+	// bwrapArgs[0] is bwrapPath itself, skip it for exec.CommandContext
+	cmd := exec.CommandContext(ctx, bwrapPath, bwrapArgs[1:]...)
+
+	// Build environment with proper TMPDIR handling and custom env vars
+	// On Linux with ProvideTmp, we mount a tmpfs at /tmp, so set TMPDIR=/tmp
+	tmpDir := ""
+	if p.ProvideTmp {
+		tmpDir = "/tmp"
+	}
+	cmd.Env = buildEnv(p, tmpDir)
+
+	// If network proxy is configured, add proxy environment variables
+	if p.NetworkProxy != nil {
+		cmd.Env = append(cmd.Env, p.NetworkProxy.Env()...)
+	}
+
+	return cmd, nil
+}
+
+// bubblewrapArgs builds the argument list for bwrap.
+// Returns the full argv including bwrapPath at [0].
+func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error) {
+	// Use Policy.WorkDir if specified, otherwise current directory
+	wd := policy.WorkDir
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getwd: %w", err)
+		}
+	}
+
+	bwrapPath, err := exec.LookPath("bwrap")
+	if err != nil {
+		return nil, fmt.Errorf("lookpath bwrap: %w", err)
+	}
+
+	args := []string{bwrapPath}
+	seen := newMountSet()
+
+	// When AllowAllReads is true, bind-mount the entire root filesystem read-only.
+	// This allows reading any file (like macOS's AllowAllReads behavior).
+	// Later mounts (read-write paths, /proc, /dev, /tmp) will override specific paths.
+	if policy.AllowAllReads {
+		args = append(args, "--ro-bind", "/", "/")
+		seen.add("--ro-bind", "/")
+	}
+
+	// Essential virtual filesystems (always required for process execution)
+	args = append(args,
+		"--proc", "/proc",
+		"--dev", "/dev",
+	)
+
+	// Temp directory (isolated tmpfs if requested)
+	// Must be mounted BEFORE proxy sockets so they can be bind-mounted on top
+	if policy.ProvideTmp {
+		args = append(args, "--tmpfs", "/tmp")
+	}
+
+	// Mount read-only paths from policy (with canonicalization)
+	for _, m := range policy.ReadOnlyMounts {
+		canonSrc, err := canonicalPath(m.Source)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize readonly mount %s: %w", m.Source, err)
+		}
+		canonTgt, err := canonicalPath(m.Target)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize readonly target %s: %w", m.Target, err)
+		}
+		args, err = appendMount(args, seen, mount{flag: "--ro-bind", source: canonSrc, target: canonTgt})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Mount read-write paths from policy (with canonicalization)
+	for _, m := range policy.ReadWriteMounts {
+		canonSrc, err := canonicalPath(m.Source)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize readwrite mount %s: %w", m.Source, err)
+		}
+		canonTgt, err := canonicalPath(m.Target)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize readwrite target %s: %w", m.Target, err)
+		}
+		args, err = appendMount(args, seen, mount{flag: "--bind", source: canonSrc, target: canonTgt})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Mount Unix sockets for network proxy (if configured)
+	if policy.NetworkProxy != nil {
+		// Extract Unix socket paths from proxy addresses
+		httpSock := extractUnixSocketPath(policy.NetworkProxy.HTTPAddr())
+		socksSock := extractUnixSocketPath(policy.NetworkProxy.SOCKSAddr())
+
+		// Mount sockets into sandbox (read-write for bidirectional communication)
+		if httpSock != "" {
+			args, err = appendMount(args, seen, mount{flag: "--bind", source: httpSock, target: httpSock})
+			if err != nil {
+				return nil, fmt.Errorf("mount http proxy socket: %w", err)
+			}
+		}
+		if socksSock != "" {
+			args, err = appendMount(args, seen, mount{flag: "--bind", source: socksSock, target: socksSock})
+			if err != nil {
+				return nil, fmt.Errorf("mount socks proxy socket: %w", err)
+			}
+		}
+	}
+
+	// On modern Linux systems, /bin, /lib, /lib64, and /sbin are symlinks to /usr subdirectories.
+	// We need to recreate these symlinks in the sandbox for executables and libraries to be found.
+	// Skip this when AllowAllReads is true since the symlinks already exist from the root bind.
+	if !policy.AllowAllReads {
+		commonSymlinks := []struct {
+			link   string
+			target string
+		}{
+			{"/bin", "usr/bin"},
+			{"/lib", "usr/lib"},
+			{"/lib64", "usr/lib64"},
+			{"/sbin", "usr/sbin"},
+		}
+		for _, sl := range commonSymlinks {
+			if info, err := os.Lstat(sl.link); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				args = append(args, "--symlink", sl.target, sl.link)
+			}
+		}
+	}
+
+	// Network and namespace isolation
+	if !policy.AllowSharedNamespaces {
+		// Unshare all namespaces (network, IPC, PID, UTS, cgroup)
+		args = append(args, "--unshare-all")
+
+		// Re-share network if AllowNetwork is true and no proxy filtering
+		// (proxy requires isolated network namespace to force traffic through proxy)
+		if policy.AllowNetwork && policy.NetworkProxy == nil {
+			args = append(args, "--share-net")
+		}
+	} else if policy.NetworkProxy != nil {
+		// Proxy-based filtering: isolate network namespace to force traffic through proxy
+		args = append(args, "--unshare-net")
+	} else if !policy.AllowNetwork {
+		// Shared namespaces allowed, but network specifically blocked
+		args = append(args, "--unshare-net")
+	}
+	// else: both shared namespaces and network allowed - no unsharing
+
+	// Process lifecycle control
+	if !policy.AllowParentSurvival {
+		args = append(args, "--die-with-parent")
+	}
+	if !policy.AllowSessionControl {
+		args = append(args, "--new-session")
+	}
+
+	// Mount working directory as read-write (with canonicalization)
+	workdir, err := canonicalPath(wd)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize working directory: %w", err)
+	}
+	args, err = appendMount(args, seen, mount{flag: "--bind", source: workdir, target: workdir})
+	if err != nil {
+		return nil, fmt.Errorf("bind working directory: %w", err)
+	}
+	args = append(args, "--chdir", workdir)
+
+	// Append the separator and the actual command + arguments
+	args = append(args, "--")
+	args = append(args, argv...)
+
+	return args, nil
+}
+
+// appendMount adds a mount entry to the bubblewrap args if not already present.
+func appendMount(args []string, seen *mountSet, entry mount) ([]string, error) {
+	if entry.source == "" || entry.target == "" {
+		return nil, fmt.Errorf("sandbox: mount requires non-empty paths")
+	}
+
+	if seen.has(entry.flag, entry.target) {
+		return args, nil
+	}
+
+	if err := ensurePath(entry.source); err != nil {
+		return nil, fmt.Errorf("sandbox: stat %s: %w", entry.source, err)
+	}
+
+	seen.add(entry.flag, entry.target)
+	args = append(args, entry.flag, entry.source, entry.target)
+	return args, nil
+}
+
+// ensurePath verifies that a path exists.
+func ensurePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("sandbox: empty path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+// extractUnixSocketPath extracts the filesystem path from a Unix socket address.
+// For addresses like "unix:///tmp/praxis-NNNN/http.sock", returns "/tmp/praxis-NNNN/http.sock".
+// For non-Unix socket addresses, returns empty string.
+func extractUnixSocketPath(addr string) string {
+	const prefix = "unix://"
+	if len(addr) > len(prefix) && addr[:len(prefix)] == prefix {
+		return addr[len(prefix):]
+	}
+	return ""
+}

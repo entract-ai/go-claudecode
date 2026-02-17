@@ -1,0 +1,6 @@
+[submodule "third_party/claude-agent-sdk-python"]
+	path = third_party/claude-agent-sdk-python
+	url = https://github.com/anthropics/claude-agent-sdk-python
+[submodule "third_party/sandbox-runtime"]
+	path = third_party/sandbox-runtime
+	url = https://github.com/anthropic-experimental/sandbox-runtime
