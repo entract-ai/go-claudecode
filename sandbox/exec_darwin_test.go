@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,17 +15,19 @@ import (
 func TestSeatbeltPolicy_NoBsdSbImport(t *testing.T) {
 	t.Parallel()
 
-	// The base seatbelt policy should NOT import bsd.sb
-	assert.NotContains(t, seatbeltBasePolicy, "bsd.sb",
+	// The base seatbelt policy should NOT import bsd.sb via an (import ...) directive.
+	// Comments mentioning bsd.sb are expected (they explain why it's not imported).
+	assert.NotContains(t, seatbeltBasePolicy, `(import "bsd.sb")`,
 		"Seatbelt policy must not import bsd.sb; it includes permissions that undermine deny-by-default")
 }
 
 func TestSeatbeltPolicy_NoTrustdAgentByDefault(t *testing.T) {
 	t.Parallel()
 
-	// The base seatbelt policy should NOT include trustd.agent
-	assert.NotContains(t, seatbeltBasePolicy, "com.apple.trustd.agent",
-		"Seatbelt policy must not unconditionally allow trustd.agent")
+	// The base seatbelt policy should not have an (allow ...) rule for trustd.agent.
+	// Comments mentioning it are expected (they explain why it's conditional).
+	assert.NotContains(t, seatbeltBasePolicy, `(global-name "com.apple.trustd.agent")`,
+		"Seatbelt base policy must not have an allow rule for trustd.agent")
 }
 
 func TestSeatbeltArgs_TrustdAgentConditional(t *testing.T) {
@@ -39,8 +42,8 @@ func TestSeatbeltArgs_TrustdAgentConditional(t *testing.T) {
 	require.NoError(t, err)
 
 	policyStr := args[2] // seatbeltPath, "-p", <policy string>
-	assert.NotContains(t, policyStr, "com.apple.trustd.agent",
-		"Default policy should not include trustd.agent")
+	assert.NotContains(t, policyStr, `(allow mach-lookup (global-name "com.apple.trustd.agent"))`,
+		"Default policy should not have an allow rule for trustd.agent")
 
 	// With EnableWeakerNetworkIsolation: should include trustd.agent
 	policy2 := DefaultPolicy()
@@ -58,7 +61,7 @@ func TestSeatbeltArgs_DenyWritePaths(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	denyPath := tmpDir + "/protected"
+	denyPath := filepath.Join(tmpDir, "protected")
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 
 	policy := DefaultPolicy()
@@ -99,7 +102,7 @@ func TestSeatbeltArgs_DenyPathInjection(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = tmpDir
 	// Path with quote character that could break S-expression syntax if interpolated directly
-	policy.DenyWritePaths = []string{tmpDir + `/evil"(allow file-write*)`}
+	policy.DenyWritePaths = []string{filepath.Join(tmpDir, `evil"(allow file-write*)`)}
 
 	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
 	require.NoError(t, err)
@@ -116,7 +119,7 @@ func TestSeatbeltArgs_DenyAfterAllowOrdering(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	denyPath := tmpDir + "/protected"
+	denyPath := filepath.Join(tmpDir, "protected")
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 
 	policy := DefaultPolicy()
@@ -140,11 +143,48 @@ func TestSeatbeltArgs_DenyAfterAllowOrdering(t *testing.T) {
 		"Deny rules must appear after allow rules in the Seatbelt policy")
 }
 
+func TestSeatbeltArgs_DenyReadPaths(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretDir := filepath.Join(tmpDir, "secrets")
+	require.NoError(t, os.MkdirAll(secretDir, 0o755))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowAllReads = true
+	policy.DenyReadPaths = []string{secretDir}
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Should contain deny file-read* rule using parameter indirection
+	assert.Contains(t, policyStr, "deny file-read*",
+		"Should have deny file-read* rule for deny read path")
+	assert.Contains(t, policyStr, `(param "DENY_READ_0")`,
+		"Deny read paths should use parameter indirection")
+
+	// The path should be passed as a -D parameter, not in the policy string
+	assert.NotContains(t, policyStr, secretDir,
+		"Deny read paths must use parameter indirection")
+
+	foundDenyReadParam := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-DDENY_READ_") && strings.Contains(arg, secretDir) {
+			foundDenyReadParam = true
+			break
+		}
+	}
+	assert.True(t, foundDenyReadParam, "Deny read path should be passed as -D parameter")
+}
+
 func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	gitHooksDir := tmpDir + "/.git/hooks"
+	gitHooksDir := filepath.Join(tmpDir, ".git", "hooks")
 	require.NoError(t, os.MkdirAll(gitHooksDir, 0o755))
 
 	policy := DefaultPolicy()
@@ -160,4 +200,78 @@ func TestSeatbeltArgs_FileWriteUnlinkProtection(t *testing.T) {
 	// file-write-unlink (rename/move). A single deny rule is sufficient.
 	assert.Contains(t, policyStr, "deny file-write*",
 		"Should have deny file-write* rule covering all write ops including unlink")
+}
+
+func TestSeatbeltArgs_AncestorUnlinkProtection(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	gitHooksDir := filepath.Join(tmpDir, ".git", "hooks")
+	require.NoError(t, os.MkdirAll(gitHooksDir, 0o755))
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.DenyWritePaths = []string{gitHooksDir}
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Should have deny file-write-unlink rules for ancestor directories
+	assert.Contains(t, policyStr, "deny file-write-unlink",
+		"Should have deny file-write-unlink rule for ancestor directories")
+
+	// Ancestor .git should be protected (between hooks and workdir)
+	gitDir := filepath.Join(tmpDir, ".git")
+	foundGitAncestor := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-DDENY_ANCESTOR_") && strings.Contains(arg, gitDir) {
+			foundGitAncestor = true
+			break
+		}
+	}
+	assert.True(t, foundGitAncestor,
+		"Ancestor directory .git should be protected from unlink")
+}
+
+func TestAncestorDirectories(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		path     string
+		root     string
+		expected []string
+	}{
+		{
+			"two levels deep",
+			"/workdir/.git/hooks",
+			"/workdir",
+			[]string{"/workdir/.git"},
+		},
+		{
+			"three levels deep",
+			"/workdir/.git/hooks/pre-commit",
+			"/workdir",
+			[]string{"/workdir/.git/hooks", "/workdir/.git"},
+		},
+		{
+			"direct child",
+			"/workdir/.bashrc",
+			"/workdir",
+			nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ancestorDirectories(tt.path, tt.root)
+			if tt.expected == nil {
+				assert.Empty(t, got)
+			} else {
+				assert.ElementsMatch(t, tt.expected, got)
+			}
+		})
+	}
 }

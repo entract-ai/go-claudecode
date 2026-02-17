@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -55,8 +57,9 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 		})
 	}
 
-	// If network proxy is configured, add proxy environment variables
+	// If network proxy is configured, filter existing proxy vars and add our own
 	if p.NetworkProxy != nil {
+		cmd.Env = filterProxyEnvVars(cmd.Env)
 		cmd.Env = append(cmd.Env, p.NetworkProxy.Env()...)
 	}
 
@@ -181,6 +184,21 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("  (with message \"%s-read\"))\n", logTag))
 	}
 
+	// Deny-read: block reads from specific paths even when AllowAllReads is true.
+	// These rules appear after the allow-read rule, and Seatbelt uses last-match-wins
+	// semantics, so deny takes precedence (same pattern as deny-write below).
+	var denyReadPaths []string
+	for _, denyPath := range policy.DenyReadPaths {
+		canonDeny := denyPath
+		if resolved, err := canonicalPath(denyPath); err == nil {
+			canonDeny = resolved
+		}
+		denyReadPaths = append(denyReadPaths, canonDeny)
+	}
+	for i := range denyReadPaths {
+		policyBuilder.WriteString(fmt.Sprintf("(deny file-read*\n  (subpath (param \"DENY_READ_%d\"))\n  (with message \"%s-deny-read\"))\n", i, logTag))
+	}
+
 	// Add write access rules
 	if len(writablePaths) > 0 {
 		policyBuilder.WriteString("(allow file-write*\n")
@@ -207,6 +225,33 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		// file-write-data, file-write-create, file-write-unlink (rename/move),
 		// file-write-xattr, etc. A single deny rule covers all write vectors.
 		policyBuilder.WriteString(fmt.Sprintf("(deny file-write*\n  (subpath (param \"DENY_WRITE_%d\"))\n  (with message \"%s-deny\"))\n", i, logTag))
+	}
+
+	// Ancestor unlink protection: prevent renaming/unlinking ancestor directories
+	// of deny-write and deny-read paths. Without this, an attacker could rename a
+	// parent directory to bypass the deny rules, then recreate it without protections.
+	// The deny targets themselves don't need separate unlink protection because
+	// deny file-write* (with subpath) already covers file-write-unlink for the
+	// target and everything beneath it.
+	ancestorSet := make(map[string]struct{})
+	for _, p := range denyPaths {
+		for _, a := range ancestorDirectories(p, workdir) {
+			ancestorSet[a] = struct{}{}
+		}
+	}
+	for _, p := range denyReadPaths {
+		for _, a := range ancestorDirectories(p, workdir) {
+			ancestorSet[a] = struct{}{}
+		}
+	}
+	var ancestorPaths []string
+	for a := range ancestorSet {
+		ancestorPaths = append(ancestorPaths, a)
+	}
+	// Sort for deterministic output
+	slices.Sort(ancestorPaths)
+	for i := range ancestorPaths {
+		policyBuilder.WriteString(fmt.Sprintf("(deny file-write-unlink\n  (literal (param \"DENY_ANCESTOR_%d\"))\n  (with message \"%s-ancestor\"))\n", i, logTag))
 	}
 
 	// Conditionally allow com.apple.trustd.agent for Go TLS certificate verification.
@@ -264,6 +309,16 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		args = append(args, fmt.Sprintf("-DDENY_WRITE_%d=%s", i, path))
 	}
 
+	// Add -D parameter definitions for deny read paths
+	for i, path := range denyReadPaths {
+		args = append(args, fmt.Sprintf("-DDENY_READ_%d=%s", i, path))
+	}
+
+	// Add -D parameter definitions for ancestor paths
+	for i, path := range ancestorPaths {
+		args = append(args, fmt.Sprintf("-DDENY_ANCESTOR_%d=%s", i, path))
+	}
+
 	// Add separator and command
 	args = append(args, "--")
 	args = append(args, argv...)
@@ -301,4 +356,20 @@ func extractPort(addr string) string {
 		return ""
 	}
 	return port
+}
+
+// ancestorDirectories returns all ancestor directories of path up to (but not
+// including) root. For example, ancestorDirectories("/a/b/c/d", "/a") returns
+// ["/a/b", "/a/b/c"]. The root itself is excluded because it's a writable mount
+// point and shouldn't be blocked from unlink.
+// Both path and root must be canonical (no "..", ".", or trailing slashes)
+// since termination relies on exact string comparison with root.
+func ancestorDirectories(path, root string) []string {
+	var ancestors []string
+	dir := filepath.Dir(path)
+	for dir != root && dir != "/" && dir != "." {
+		ancestors = append(ancestors, dir)
+		dir = filepath.Dir(dir)
+	}
+	return ancestors
 }

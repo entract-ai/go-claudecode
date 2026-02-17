@@ -75,17 +75,19 @@ Do NOT add these features. If upstream changes relate to them, skip the port.
 
 ## Development
 
+This project requires a GOEXPERIMENT flag for the build. Use `./with_api_keys.sh` as a wrapper, which sets the appropriate environment (including GOEXPERIMENT). If you run `go build`, `go test`, etc. directly, you must have the same GOEXPERIMENT in your environment.
+
 ```bash
 # Run all tests
-go test ./...
+./with_api_keys.sh go test ./...
 
 # Run tests for a specific package
-go test ./claudecode/
-go test ./sandbox/
-go test ./mcp/
+./with_api_keys.sh go test ./claudecode/
+./with_api_keys.sh go test ./sandbox/
+./with_api_keys.sh go test ./mcp/
 
 # Run with race detector
-go test -race ./...
+./with_api_keys.sh go test -race ./...
 ```
 
 ## Code style

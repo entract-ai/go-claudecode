@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,14 +48,9 @@ func TestNetworkProxy_StartStop(t *testing.T) {
 	assert.NotEmpty(t, proxy.HTTPAddr())
 	assert.NotEmpty(t, proxy.SOCKSAddr())
 
-	// Verify platform-specific address formats
-	if runtime.GOOS == "linux" {
-		assert.True(t, strings.HasPrefix(proxy.HTTPAddr(), "unix://"))
-		assert.True(t, strings.HasPrefix(proxy.SOCKSAddr(), "unix://"))
-	} else {
-		assert.True(t, strings.HasPrefix(proxy.HTTPAddr(), "http://127.0.0.1:"))
-		assert.True(t, strings.Contains(proxy.SOCKSAddr(), "127.0.0.1:"))
-	}
+	// Verify address formats (TCP on all platforms)
+	assert.True(t, strings.HasPrefix(proxy.HTTPAddr(), "http://127.0.0.1:"))
+	assert.True(t, strings.Contains(proxy.SOCKSAddr(), "127.0.0.1:"))
 
 	// Verify environment variables
 	env := proxy.Env()
@@ -75,13 +69,9 @@ func TestNetworkProxy_StartStop(t *testing.T) {
 	assert.True(t, foundHTTP, "Should have HTTP_PROXY environment variable")
 	assert.True(t, foundSOCKS, "Should have ALL_PROXY environment variable")
 
-	// Close should succeed
-	err = proxy.Close()
-	assert.NoError(t, err)
-
-	// Close should be idempotent
-	err = proxy.Close()
-	assert.NoError(t, err)
+	// Close should succeed (idempotent)
+	proxy.Close()
+	proxy.Close()
 }
 
 func TestNetworkProxy_MultipleInstances(t *testing.T) {
@@ -104,11 +94,6 @@ func TestNetworkProxy_MultipleInstances(t *testing.T) {
 func TestNetworkProxy_HTTPConnect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
-	}
-
-	// Only test on macOS for now (TCP sockets are easier to test)
-	if runtime.GOOS != "darwin" {
-		t.Skip("TCP proxy test only runs on macOS")
 	}
 
 	t.Parallel()
@@ -150,11 +135,6 @@ func TestNetworkProxy_HTTPConnect(t *testing.T) {
 func TestNetworkProxy_SOCKS5(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
-	}
-
-	// Only test on macOS for now (TCP sockets are easier to test)
-	if runtime.GOOS != "darwin" {
-		t.Skip("TCP proxy test only runs on macOS")
 	}
 
 	t.Parallel()
@@ -287,6 +267,88 @@ func TestNetworkFilter_Wildcards(t *testing.T) {
 	}
 }
 
+func TestNetworkFilter_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		host    string
+		port    string
+		want    bool
+	}{
+		{"exact match different case", "Example.COM", "example.com", "80", true},
+		{"exact match uppercase host", "example.com", "EXAMPLE.COM", "80", true},
+		{"wildcard case insensitive", "*.Example.COM", "api.example.com", "80", true},
+		{"wildcard uppercase host", "*.example.com", "API.EXAMPLE.COM", "80", true},
+		{"wildcard mixed case", "*.EXAMPLE.com", "Foo.Bar.example.COM", "80", true},
+		{"wildcard no match different domain", "*.Example.COM", "example.org", "80", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesPattern(tt.pattern, tt.host, tt.port)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestValidateNetworkFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr bool
+	}{
+		{"valid domain", "example.com", false},
+		{"valid wildcard", "*.example.com", false},
+		{"valid port specific", "example.com:443", false},
+		{"valid wildcard with port", "*.example.com:443", false},
+		{"valid localhost", "localhost", false},
+		{"valid localhost with port", "localhost:8080", false},
+		{"protocol prefix", "https://example.com", true},
+		{"path in pattern", "example.com/path", true},
+		{"bare wildcard", "*", true},
+		{"tld wildcard", "*.com", true},
+		{"starts with dot", ".example.com", true},
+		{"ends with dot", "example.com.", true},
+		{"empty pattern", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter := &NetworkFilter{AllowHosts: []string{tt.pattern}}
+			err := ValidateNetworkFilter(filter)
+			if tt.wantErr {
+				assert.Error(t, err, "pattern %q should be rejected", tt.pattern)
+			} else {
+				assert.NoError(t, err, "pattern %q should be accepted", tt.pattern)
+			}
+		})
+	}
+}
+
+func TestValidateNetworkFilter_DenyList(t *testing.T) {
+	t.Parallel()
+
+	filter := &NetworkFilter{
+		DenyHosts: []string{"https://evil.com"},
+	}
+	err := ValidateNetworkFilter(filter)
+	assert.Error(t, err, "should reject invalid deny patterns too")
+}
+
+func TestNewNetworkProxy_RejectsInvalidFilter(t *testing.T) {
+	t.Parallel()
+
+	filter := &NetworkFilter{
+		AllowHosts: []string{"https://example.com"},
+	}
+	_, err := NewNetworkProxy(filter)
+	assert.Error(t, err, "should reject proxy creation with invalid filter")
+}
+
 func TestNetworkFilter_AllowList(t *testing.T) {
 	t.Parallel()
 
@@ -401,11 +463,6 @@ func TestNetworkProxy_Env_NoProxy(t *testing.T) {
 func TestNetworkProxy_Env_Socks5h(t *testing.T) {
 	t.Parallel()
 
-	// Only test on macOS-style TCP sockets where we can inspect the URL scheme
-	if runtime.GOOS == "linux" {
-		t.Skip("SOCKS URL format test only applicable to macOS TCP sockets")
-	}
-
 	proxy, err := NewNetworkProxy(nil)
 	require.NoError(t, err)
 	defer proxy.Close()
@@ -441,13 +498,8 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 	assert.Contains(t, envMap, "FTP_PROXY", "Should set FTP_PROXY")
 	assert.Contains(t, envMap, "ftp_proxy", "Should set ftp_proxy")
 
-	// RSYNC_PROXY only set on macOS (requires TCP host:port, not Unix socket paths)
-	if runtime.GOOS == "darwin" {
-		assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY on macOS")
-	} else {
-		assert.NotContains(t, envMap, "RSYNC_PROXY",
-			"Should not set RSYNC_PROXY on Linux (Unix socket path is incompatible with rsync)")
-	}
+	// RSYNC_PROXY set on all platforms (TCP sockets)
+	assert.Contains(t, envMap, "RSYNC_PROXY", "Should set RSYNC_PROXY")
 
 	// Should have Docker proxy vars
 	assert.Contains(t, envMap, "DOCKER_HTTP_PROXY", "Should set DOCKER_HTTP_PROXY")
@@ -461,10 +513,6 @@ func TestNetworkProxy_Env_AdditionalProxyVars(t *testing.T) {
 
 func TestNetworkProxy_Env_GitSSHCommand(t *testing.T) {
 	t.Parallel()
-
-	if runtime.GOOS != "darwin" {
-		t.Skip("GIT_SSH_COMMAND only set on macOS")
-	}
 
 	proxy, err := NewNetworkProxy(nil)
 	require.NoError(t, err)

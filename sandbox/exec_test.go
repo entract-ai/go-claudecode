@@ -484,6 +484,61 @@ func TestBuildEnv(t *testing.T) {
 	})
 }
 
+func TestFilterProxyEnvVars(t *testing.T) {
+	t.Parallel()
+
+	env := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/user",
+		"HTTP_PROXY=http://old-proxy:8080",
+		"HTTPS_PROXY=http://old-proxy:8080",
+		"http_proxy=http://old-proxy:8080",
+		"https_proxy=http://old-proxy:8080",
+		"ALL_PROXY=socks5://old-proxy:1080",
+		"all_proxy=socks5://old-proxy:1080",
+		"NO_PROXY=localhost",
+		"no_proxy=localhost",
+		"FTP_PROXY=ftp://old-proxy:21",
+		"ftp_proxy=ftp://old-proxy:21",
+		"RSYNC_PROXY=old-proxy:873",
+		"DOCKER_HTTP_PROXY=http://old-proxy:8080",
+		"DOCKER_HTTPS_PROXY=http://old-proxy:8080",
+		"DOCKER_NO_PROXY=localhost",
+		"GRPC_PROXY=socks5://old-proxy:1080",
+		"grpc_proxy=socks5://old-proxy:1080",
+		"GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x old-proxy:1080 %h %p'",
+		"CUSTOM_VAR=keep_me",
+	}
+
+	filtered := filterProxyEnvVars(env)
+
+	// Should keep non-proxy vars
+	assert.Contains(t, filtered, "PATH=/usr/bin")
+	assert.Contains(t, filtered, "HOME=/home/user")
+	assert.Contains(t, filtered, "CUSTOM_VAR=keep_me")
+
+	// Should remove all proxy vars
+	for _, e := range filtered {
+		assert.False(t, strings.HasPrefix(e, "HTTP_PROXY="), "should filter HTTP_PROXY")
+		assert.False(t, strings.HasPrefix(e, "HTTPS_PROXY="), "should filter HTTPS_PROXY")
+		assert.False(t, strings.HasPrefix(e, "http_proxy="), "should filter http_proxy")
+		assert.False(t, strings.HasPrefix(e, "https_proxy="), "should filter https_proxy")
+		assert.False(t, strings.HasPrefix(e, "ALL_PROXY="), "should filter ALL_PROXY")
+		assert.False(t, strings.HasPrefix(e, "NO_PROXY="), "should filter NO_PROXY")
+		assert.False(t, strings.HasPrefix(e, "GIT_SSH_COMMAND="), "should filter GIT_SSH_COMMAND")
+	}
+
+	// Should only have the 3 non-proxy vars
+	assert.Len(t, filtered, 3)
+}
+
+func TestFilterProxyEnvVars_Empty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, filterProxyEnvVars(nil))
+	assert.Empty(t, filterProxyEnvVars([]string{}))
+}
+
 func TestIntegrationHeredocInSandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")

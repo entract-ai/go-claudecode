@@ -7,9 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,16 +27,76 @@ type NetworkFilter struct {
 	DenyHosts []string
 }
 
-// NetworkProxy manages HTTP and SOCKS5 proxy servers with optional domain filtering.
-// On macOS, proxies listen on localhost TCP sockets with OS-allocated ports.
-// On Linux, proxies listen on Unix domain sockets in a temporary directory.
+// ValidateNetworkFilter checks that all patterns in a NetworkFilter are valid.
+// Invalid patterns include:
+//   - Patterns containing "://" (protocol prefixes)
+//   - Patterns containing "/" (paths)
+//   - Bare "*" or TLD-only wildcards like "*.com" (too broad)
+//   - Patterns starting or ending with "."
+//   - "localhost" is always allowed as a special case
 //
-// Known limitation (Linux): The proxy uses unix:// URLs in environment variables
-// (HTTP_PROXY, HTTPS_PROXY). Most standard HTTP client libraries (curl, Python
-// requests, Go net/http, Node.js) do not support unix:// in proxy env vars.
-// The upstream sandbox-runtime solves this with socat relays that create TCP
-// listeners inside the sandbox namespace. Until a similar relay is implemented,
-// Linux network filtering through the proxy may not work with all tools.
+// Port-specific patterns (e.g., "example.com:443") are allowed; the port is
+// stripped before validating the host part.
+func ValidateNetworkFilter(filter *NetworkFilter) error {
+	for _, pattern := range filter.AllowHosts {
+		if err := validatePattern(pattern); err != nil {
+			return fmt.Errorf("allow host %q: %w", pattern, err)
+		}
+	}
+	for _, pattern := range filter.DenyHosts {
+		if err := validatePattern(pattern); err != nil {
+			return fmt.Errorf("deny host %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+func validatePattern(pattern string) error {
+	if pattern == "" {
+		return fmt.Errorf("empty pattern")
+	}
+	if strings.Contains(pattern, "://") {
+		return fmt.Errorf("must not contain protocol prefix")
+	}
+	if strings.Contains(pattern, "/") {
+		return fmt.Errorf("must not contain path separators")
+	}
+
+	// Strip port if present. Note: IPv6 literal addresses (e.g., [::1]:443) are
+	// not supported as patterns; this only handles domain:port and IPv4:port.
+	host := pattern
+	if idx := strings.LastIndexByte(pattern, ':'); idx >= 0 {
+		host = pattern[:idx]
+	}
+
+	if host == "" {
+		return fmt.Errorf("empty host")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
+		return fmt.Errorf("must not start or end with '.'")
+	}
+	if host == "*" {
+		return fmt.Errorf("bare wildcard '*' is too broad")
+	}
+
+	// Wildcard patterns: *.suffix must have at least 2 dot-separated parts after *.
+	if len(host) > 2 && host[0] == '*' && host[1] == '.' {
+		suffix := host[2:] // after "*."
+		if strings.Count(suffix, ".") < 1 {
+			return fmt.Errorf("wildcard %q is too broad (must have at least two domain parts after *.)", host)
+		}
+	}
+
+	return nil
+}
+
+// NetworkProxy manages HTTP and SOCKS5 proxy servers with optional domain filtering.
+// Proxies listen on localhost TCP sockets (127.0.0.1) with OS-allocated ports on
+// both macOS and Linux. On Linux, the network namespace (--unshare-net) prevents
+// bypass since the loopback interface inside the namespace is isolated.
 //
 // The proxy must be explicitly closed via Close() to clean up resources.
 // Goroutine leaks will occur if Close() is not called.
@@ -57,15 +115,14 @@ type NetworkFilter struct {
 //	// Use proxy.Env() to configure sandboxed processes
 //	policy.NetworkProxy = proxy
 type NetworkProxy struct {
-	filter      *NetworkFilter
-	httpAddr    string
-	socksAddr   string
-	httpLn      net.Listener
-	socksLn     net.Listener
-	socksTmpDir string // For Unix socket cleanup on Linux
-	closeOnce   sync.Once
-	closed      chan struct{}
-	wg          sync.WaitGroup
+	filter    *NetworkFilter
+	httpAddr  string
+	socksAddr string
+	httpLn    net.Listener
+	socksLn   net.Listener
+	closeOnce sync.Once
+	closed    chan struct{}
+	wg        sync.WaitGroup
 
 	mu         sync.Mutex
 	httpServer *http.Server
@@ -75,17 +132,22 @@ type NetworkProxy struct {
 // The proxies begin accepting connections immediately.
 // The returned proxy must be closed via Close() to prevent resource leaks.
 func NewNetworkProxy(filter *NetworkFilter) (*NetworkProxy, error) {
-	httpLn, socksLn, tmpDir, err := createListeners()
+	if filter != nil {
+		if err := ValidateNetworkFilter(filter); err != nil {
+			return nil, fmt.Errorf("validate network filter: %w", err)
+		}
+	}
+
+	httpLn, socksLn, err := createListeners()
 	if err != nil {
 		return nil, fmt.Errorf("create listeners: %w", err)
 	}
 
 	p := &NetworkProxy{
-		filter:      filter,
-		httpLn:      httpLn,
-		socksLn:     socksLn,
-		socksTmpDir: tmpDir,
-		closed:      make(chan struct{}),
+		filter:  filter,
+		httpLn:  httpLn,
+		socksLn: socksLn,
+		closed:  make(chan struct{}),
 	}
 
 	// Get listener addresses
@@ -115,16 +177,12 @@ func NewNetworkProxy(filter *NetworkFilter) (*NetworkProxy, error) {
 	return p, nil
 }
 
-// HTTPAddr returns the HTTP proxy address in a format suitable for HTTP_PROXY environment variables.
-// On macOS: "http://127.0.0.1:PORT"
-// On Linux: "unix:///path/to/http.sock"
+// HTTPAddr returns the HTTP proxy address in "http://127.0.0.1:PORT" format.
 func (p *NetworkProxy) HTTPAddr() string {
 	return p.httpAddr
 }
 
-// SOCKSAddr returns the SOCKS5 proxy address.
-// On macOS: "127.0.0.1:PORT"
-// On Linux: "unix:///path/to/socks.sock"
+// SOCKSAddr returns the SOCKS5 proxy address in "127.0.0.1:PORT" format.
 func (p *NetworkProxy) SOCKSAddr() string {
 	return p.socksAddr
 }
@@ -161,14 +219,7 @@ func (p *NetworkProxy) Env() []string {
 
 	// Build SOCKS proxy URL: use socks5h:// so DNS resolution happens through
 	// the proxy rather than locally (which would fail inside a sandboxed namespace).
-	var socksURL string
-	if runtime.GOOS == "linux" {
-		// Unix socket format for socks (used until socat relay is implemented)
-		socksURL = socksAddr
-	} else {
-		// TCP socket format for socks
-		socksURL = "socks5h://" + socksAddr
-	}
+	socksURL := "socks5h://" + socksAddr
 
 	env = append(env,
 		"ALL_PROXY="+socksURL,
@@ -186,20 +237,16 @@ func (p *NetworkProxy) Env() []string {
 		// gRPC proxy
 		"GRPC_PROXY="+socksURL,
 		"grpc_proxy="+socksURL,
-	)
 
-	// macOS-only proxy variables that require TCP host:port format.
-	// On Linux, proxy addresses are Unix socket paths which these tools don't understand.
-	if runtime.GOOS == "darwin" {
 		// RSYNC proxy expects host:port format without scheme
-		env = append(env, "RSYNC_PROXY="+socksAddr)
+		"RSYNC_PROXY="+socksAddr,
 
-		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy
-		// (macOS nc supports SOCKS proxying)
-		env = append(env,
-			fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
-		)
-	}
+		// GIT_SSH_COMMAND: route git-over-SSH through SOCKS proxy.
+		// The -X 5 -x flags are BSD/macOS nc extensions. On Linux with GNU netcat,
+		// this will fail-closed (git SSH connections are blocked, not bypassed).
+		// Git-over-HTTPS still works via HTTP_PROXY on all platforms.
+		fmt.Sprintf("GIT_SSH_COMMAND=ssh -o ProxyCommand='nc -X 5 -x %s %%h %%p'", socksAddr),
+	)
 
 	return env
 }
@@ -207,9 +254,7 @@ func (p *NetworkProxy) Env() []string {
 // Close gracefully shuts down the proxy servers and cleans up resources.
 // It waits for all active connections to complete before returning.
 // Close is safe to call multiple times (idempotent).
-func (p *NetworkProxy) Close() error {
-	var closeErr error
-
+func (p *NetworkProxy) Close() {
 	p.closeOnce.Do(func() {
 		// Signal shutdown to all goroutines
 		close(p.closed)
@@ -235,16 +280,7 @@ func (p *NetworkProxy) Close() error {
 
 		// Wait for all connection handlers to finish
 		p.wg.Wait()
-
-		// Clean up Unix sockets on Linux
-		if p.socksTmpDir != "" {
-			if err := os.RemoveAll(p.socksTmpDir); err != nil {
-				closeErr = fmt.Errorf("cleanup sockets directory: %w", err)
-			}
-		}
 	})
-
-	return closeErr
 }
 
 // serveHTTP runs the HTTP proxy server. It blocks until the listener is closed.
@@ -265,6 +301,7 @@ func (p *NetworkProxy) serveHTTP(ctx context.Context) error {
 
 // serveSOCKS runs the SOCKS5 proxy server. It blocks until the listener is closed.
 func (p *NetworkProxy) serveSOCKS(ctx context.Context) error {
+	var tempDelay time.Duration
 	for {
 		conn, err := p.socksLn.Accept()
 		if err != nil {
@@ -272,14 +309,27 @@ func (p *NetworkProxy) serveSOCKS(ctx context.Context) error {
 			case <-p.closed:
 				return nil
 			default:
-				// Temporary error, continue accepting
+				// Exponential backoff on transient accept errors, matching
+				// the approach used by net/http.Server.Serve.
+				if tempDelay == 0 {
+					tempDelay = 5 * time.Millisecond
+				} else {
+					tempDelay *= 2
+				}
+				if tempDelay > 1*time.Second {
+					tempDelay = 1 * time.Second
+				}
+				time.Sleep(tempDelay)
 				continue
 			}
 		}
+		tempDelay = 0
 
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			// Per-connection errors are expected (client disconnect, timeout)
+			// and not actionable at the server level.
 			p.handleSOCKS(conn)
 		}()
 	}
@@ -464,7 +514,7 @@ func matchesPattern(pattern, host, port string) bool {
 	var patternHost, patternPort string
 
 	// Check if pattern contains a port
-	if idx := lastIndexByte(pattern, ':'); idx >= 0 {
+	if idx := strings.LastIndexByte(pattern, ':'); idx >= 0 {
 		// Pattern has a port
 		patternHost = pattern[:idx]
 		patternPort = pattern[idx+1:]
@@ -484,43 +534,29 @@ func matchesPattern(pattern, host, port string) bool {
 }
 
 // matchesHost checks if a host matches a pattern with wildcard support.
+// Matching is case-insensitive per DNS conventions.
 // Wildcards (*) only match at the beginning:
 //   - "*.example.com" matches "api.example.com" and "foo.bar.example.com"
 //   - "*.example.com" does NOT match "example.com" itself
 func matchesHost(pattern, host string) bool {
-	// Exact match
-	if pattern == host {
+	// Case-insensitive exact match
+	if strings.EqualFold(pattern, host) {
 		return true
 	}
 
 	// Wildcard match
 	if len(pattern) > 2 && pattern[0] == '*' && pattern[1] == '.' {
 		// Pattern is "*.suffix"
-		suffix := pattern[1:] // ".suffix"
+		suffix := strings.ToLower(pattern[1:]) // ".suffix"
+		lowerHost := strings.ToLower(host)
 
 		// Host must end with the suffix and have at least one character before it
-		if len(host) > len(suffix) && hasSuffix(host, suffix) {
+		if len(lowerHost) > len(suffix) && strings.HasSuffix(lowerHost, suffix) {
 			return true
 		}
 	}
 
 	return false
-}
-
-// lastIndexByte finds the last occurrence of byte c in string s.
-// Returns -1 if not found.
-func lastIndexByte(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
-}
-
-// hasSuffix checks if string s ends with suffix.
-func hasSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
 // handleSOCKS processes a SOCKS5 connection.
@@ -692,101 +728,35 @@ func socks5SendReply(conn net.Conn, rep byte) error {
 	return err
 }
 
-// Platform-specific listener creation
-
-// createListeners creates HTTP and SOCKS5 listeners appropriate for the platform.
-// Returns (httpListener, socksListener, tmpDir, error).
-// On Linux, tmpDir contains the Unix socket files and must be cleaned up.
-// On macOS, tmpDir is empty.
-func createListeners() (httpLn, socksLn net.Listener, tmpDir string, err error) {
-	if runtime.GOOS == "linux" {
-		return createUnixListeners()
-	}
-	return createTCPListeners()
-}
-
-// createUnixListeners creates Unix domain socket listeners for Linux.
-//
-// TODO: Implement socat-style TCP relay inside sandbox namespace.
-// The upstream sandbox-runtime creates TCP listeners on fixed ports (3128 for HTTP,
-// 1080 for SOCKS) inside the sandbox that relay to these Unix sockets, making
-// the proxy compatible with standard HTTP client libraries.
-func createUnixListeners() (httpLn, socksLn net.Listener, tmpDir string, err error) {
-	tmpDir, err = os.MkdirTemp("", "sandbox-proxy-*")
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("create temp dir: %w", err)
-	}
-
-	httpSock := filepath.Join(tmpDir, "http.sock")
-	socksSock := filepath.Join(tmpDir, "socks.sock")
-
-	// Remove stale sockets if they exist
-	os.Remove(httpSock)
-	os.Remove(socksSock)
-
-	httpLn, err = net.Listen("unix", httpSock)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, nil, "", fmt.Errorf("listen on unix socket %s: %w", httpSock, err)
-	}
-
-	socksLn, err = net.Listen("unix", socksSock)
-	if err != nil {
-		httpLn.Close()
-		os.RemoveAll(tmpDir)
-		return nil, nil, "", fmt.Errorf("listen on unix socket %s: %w", socksSock, err)
-	}
-
-	return httpLn, socksLn, tmpDir, nil
-}
-
-// createTCPListeners creates TCP listeners on localhost for macOS.
-func createTCPListeners() (httpLn, socksLn net.Listener, tmpDir string, err error) {
+// createListeners creates TCP listeners on localhost for HTTP and SOCKS5 proxies.
+func createListeners() (httpLn, socksLn net.Listener, err error) {
 	httpLn, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("listen on tcp: %w", err)
+		return nil, nil, fmt.Errorf("listen on tcp: %w", err)
 	}
 
 	socksLn, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		httpLn.Close()
-		return nil, nil, "", fmt.Errorf("listen on tcp: %w", err)
+		return nil, nil, fmt.Errorf("listen on tcp: %w", err)
 	}
 
-	return httpLn, socksLn, "", nil
+	return httpLn, socksLn, nil
 }
 
-// formatHTTPAddress converts a net.Addr to the appropriate HTTP proxy URL format.
+// formatHTTPAddress converts a TCP address to "http://host:port" format.
 func formatHTTPAddress(addr net.Addr) string {
-	switch a := addr.(type) {
-	case *net.TCPAddr:
-		// TCP address on macOS: "http://127.0.0.1:PORT"
-		return fmt.Sprintf("http://%s", a.String())
-	case *net.UnixAddr:
-		// Unix socket on Linux: "unix:///path/to/socket"
-		return fmt.Sprintf("unix://%s", a.Name)
-	default:
-		return addr.String()
-	}
+	return fmt.Sprintf("http://%s", addr.String())
 }
 
-// formatSOCKSAddress converts a net.Addr to the appropriate SOCKS proxy address format.
+// formatSOCKSAddress converts a TCP address to "host:port" format.
 func formatSOCKSAddress(addr net.Addr) string {
-	switch a := addr.(type) {
-	case *net.TCPAddr:
-		// TCP address on macOS: "127.0.0.1:PORT"
-		return a.String()
-	case *net.UnixAddr:
-		// Unix socket on Linux: "unix:///path/to/socket"
-		return fmt.Sprintf("unix://%s", a.Name)
-	default:
-		return addr.String()
-	}
+	return addr.String()
 }
 
 // closeWriter is implemented by connections that support half-close (signaling
-// write-side EOF without closing the full connection). Both *net.TCPConn and
-// *net.UnixConn implement this interface.
+// write-side EOF without closing the full connection). *net.TCPConn implements
+// this interface.
 type closeWriter interface {
 	CloseWrite() error
 }
@@ -796,8 +766,7 @@ type closeWriter interface {
 // The caller is responsible for closing the connections (typically via defer).
 //
 // When one direction finishes, CloseWrite is called on the destination to
-// signal EOF to the peer. This works for both TCP connections (macOS proxy)
-// and Unix domain sockets (Linux proxy) via the closeWriter interface.
+// signal EOF to the peer via the closeWriter interface.
 func bidirectionalCopy(dst, src net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)

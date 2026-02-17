@@ -250,3 +250,29 @@ func filterEnvVar(env []string, name string) []string {
 	}
 	return result
 }
+
+// proxyEnvVarNames lists all proxy-related and network-routing environment
+// variable names that should be removed from the host environment before the
+// sandbox proxy adds its own. This prevents duplicate or conflicting settings.
+// GIT_SSH_COMMAND is included because the sandbox proxy injects its own
+// ProxyCommand for routing git-over-SSH through the SOCKS proxy.
+var proxyEnvVarNames = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+	"ALL_PROXY", "all_proxy",
+	"NO_PROXY", "no_proxy",
+	"FTP_PROXY", "ftp_proxy",
+	"RSYNC_PROXY",
+	"DOCKER_HTTP_PROXY", "DOCKER_HTTPS_PROXY", "DOCKER_NO_PROXY",
+	"GRPC_PROXY", "grpc_proxy",
+	"GIT_SSH_COMMAND",
+}
+
+// filterProxyEnvVars removes all proxy-related environment variables from the
+// environment slice. This should be called before appending the sandbox proxy's
+// own environment variables.
+func filterProxyEnvVars(env []string) []string {
+	for _, name := range proxyEnvVarNames {
+		env = filterEnvVar(env, name)
+	}
+	return env
+}

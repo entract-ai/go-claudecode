@@ -50,6 +50,7 @@ func NewClaudeCodeSandboxPolicy(workDir string, opts ...SandboxOptions) (*sandbo
 	policy.WorkDir = workDir
 	policy.AllowNetwork = true
 	policy.AllowAllReads = true // CLI needs to read system files, libraries, etc.
+	policy.DenyWritePaths = sandbox.DangerousWriteDenyPaths(workDir, false)
 
 	// Add Homebrew paths (macOS)
 	if sandbox.PathExists("/opt") {
