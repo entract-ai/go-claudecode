@@ -532,6 +532,13 @@ func TestFilterProxyEnvVars(t *testing.T) {
 	assert.Len(t, filtered, 3)
 }
 
+func TestFilterProxyEnvVars_Empty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, filterProxyEnvVars(nil))
+	assert.Empty(t, filterProxyEnvVars([]string{}))
+}
+
 func TestIntegrationHeredocInSandbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")

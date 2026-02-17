@@ -185,6 +185,8 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 	}
 
 	// Deny-read: block reads from specific paths even when AllowAllReads is true.
+	// These rules appear after the allow-read rule, and Seatbelt uses last-match-wins
+	// semantics, so deny takes precedence (same pattern as deny-write below).
 	var denyReadPaths []string
 	for _, denyPath := range policy.DenyReadPaths {
 		canonDeny := denyPath
