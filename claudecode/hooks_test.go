@@ -71,6 +71,27 @@ func TestHookOutput_Builders(t *testing.T) {
 	})
 }
 
+func TestHookSpecificOutput_Fields(t *testing.T) {
+	t.Run("PreToolUseSpecificOutput has AdditionalContext", func(t *testing.T) {
+		output := PreToolUseSpecificOutput{
+			HookEventName:      "PreToolUse",
+			PermissionDecision: "allow",
+			AdditionalContext:  "extra info",
+		}
+		assert.Equal(t, "extra info", output.AdditionalContext)
+	})
+
+	t.Run("PostToolUseSpecificOutput has UpdatedMCPToolOutput", func(t *testing.T) {
+		output := PostToolUseSpecificOutput{
+			HookEventName:       "PostToolUse",
+			AdditionalContext:    "context",
+			UpdatedMCPToolOutput: map[string]any{"modified": true},
+		}
+		assert.Equal(t, "context", output.AdditionalContext)
+		assert.Equal(t, map[string]any{"modified": true}, output.UpdatedMCPToolOutput)
+	})
+}
+
 func TestParseHookInput(t *testing.T) {
 	t.Run("PreToolUse", func(t *testing.T) {
 		input := map[string]any{
@@ -143,13 +164,59 @@ func TestParseHookInput(t *testing.T) {
 		assert.True(t, stopInput.StopHookActive)
 	})
 
+	t.Run("PostToolUseFailure", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name": "PostToolUseFailure",
+			"session_id":      "sess_123",
+			"transcript_path": "/path/to/transcript",
+			"cwd":             "/home/user",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]any{"command": "rm -rf /"},
+			"tool_use_id":     "tu_456",
+			"error":           "permission denied",
+			"is_interrupt":    true,
+		}
+
+		result := parseHookInput(input)
+		failure, ok := result.(PostToolUseFailureInput)
+		assert.True(t, ok)
+		assert.Equal(t, "PostToolUseFailure", failure.HookEventName)
+		assert.Equal(t, "Bash", failure.ToolName)
+		assert.Equal(t, "tu_456", failure.ToolUseID)
+		assert.Equal(t, "permission denied", failure.Error)
+		assert.True(t, failure.IsInterrupt)
+	})
+
+	t.Run("Notification", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name":   "Notification",
+			"session_id":        "sess_123",
+			"transcript_path":   "/path/to/transcript",
+			"cwd":               "/home/user",
+			"message":           "Task completed",
+			"title":             "Done",
+			"notification_type": "info",
+		}
+
+		result := parseHookInput(input)
+		notification, ok := result.(NotificationInput)
+		assert.True(t, ok)
+		assert.Equal(t, "Notification", notification.HookEventName)
+		assert.Equal(t, "Task completed", notification.Message)
+		assert.Equal(t, "Done", notification.Title)
+		assert.Equal(t, "info", notification.NotificationType)
+	})
+
 	t.Run("SubagentStop", func(t *testing.T) {
 		input := map[string]any{
-			"hook_event_name":  "SubagentStop",
-			"session_id":       "sess_123",
-			"transcript_path":  "/path/to/transcript",
-			"cwd":              "/home/user",
-			"stop_hook_active": false,
+			"hook_event_name":       "SubagentStop",
+			"session_id":            "sess_123",
+			"transcript_path":       "/path/to/transcript",
+			"cwd":                   "/home/user",
+			"stop_hook_active":      false,
+			"agent_id":              "agent_789",
+			"agent_transcript_path": "/path/to/agent/transcript",
+			"agent_type":            "researcher",
 		}
 
 		result := parseHookInput(input)
@@ -157,6 +224,47 @@ func TestParseHookInput(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "SubagentStop", subagentStop.HookEventName)
 		assert.False(t, subagentStop.StopHookActive)
+		assert.Equal(t, "agent_789", subagentStop.AgentID)
+		assert.Equal(t, "/path/to/agent/transcript", subagentStop.AgentTranscriptPath)
+		assert.Equal(t, "researcher", subagentStop.AgentType)
+	})
+
+	t.Run("SubagentStart", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name": "SubagentStart",
+			"session_id":      "sess_123",
+			"transcript_path": "/path/to/transcript",
+			"cwd":             "/home/user",
+			"agent_id":        "agent_456",
+			"agent_type":      "coder",
+		}
+
+		result := parseHookInput(input)
+		subagentStart, ok := result.(SubagentStartInput)
+		assert.True(t, ok)
+		assert.Equal(t, "SubagentStart", subagentStart.HookEventName)
+		assert.Equal(t, "agent_456", subagentStart.AgentID)
+		assert.Equal(t, "coder", subagentStart.AgentType)
+	})
+
+	t.Run("PermissionRequest", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name":       "PermissionRequest",
+			"session_id":            "sess_123",
+			"transcript_path":       "/path/to/transcript",
+			"cwd":                   "/home/user",
+			"tool_name":             "Write",
+			"tool_input":            map[string]any{"path": "/etc/passwd"},
+			"permission_suggestions": []any{"allow"},
+		}
+
+		result := parseHookInput(input)
+		permReq, ok := result.(PermissionRequestInput)
+		assert.True(t, ok)
+		assert.Equal(t, "PermissionRequest", permReq.HookEventName)
+		assert.Equal(t, "Write", permReq.ToolName)
+		assert.Equal(t, "/etc/passwd", permReq.ToolInput["path"])
+		assert.Equal(t, []any{"allow"}, permReq.PermissionSuggestions)
 	})
 
 	t.Run("PreCompact", func(t *testing.T) {

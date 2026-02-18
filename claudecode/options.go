@@ -113,6 +113,7 @@ type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]
 // ToolPermissionContext provides context for permission decisions.
 type ToolPermissionContext struct {
 	Suggestions []PermissionUpdate
+	BlockedPath string // path that triggered the permission check
 }
 
 // PermissionResult is a marker interface for permission decisions.
@@ -235,6 +236,28 @@ func getStringFromMap(m map[string]any, key string) string {
 	return ""
 }
 
+// ThinkingConfig configures the model's thinking behavior.
+type ThinkingConfig interface {
+	thinkingConfigMarker()
+}
+
+// ThinkingAdaptive lets the model decide when to think.
+type ThinkingAdaptive struct{}
+
+func (ThinkingAdaptive) thinkingConfigMarker() {}
+
+// ThinkingEnabled enables thinking with a token budget.
+type ThinkingEnabled struct {
+	BudgetTokens int
+}
+
+func (ThinkingEnabled) thinkingConfigMarker() {}
+
+// ThinkingDisabled disables thinking.
+type ThinkingDisabled struct{}
+
+func (ThinkingDisabled) thinkingConfigMarker() {}
+
 // Options holds all configuration for a Claude Code session.
 type Options struct {
 	// Tool configuration
@@ -272,9 +295,12 @@ type Options struct {
 	model         string
 	fallbackModel string
 	betas         []string
+	thinking      ThinkingConfig
+	effort        string
 
 	// Output
 	jsonSchemaOutput       map[string]any
+	outputFormat           map[string]any
 	includePartialMessages bool
 
 	// Environment
@@ -459,6 +485,30 @@ func WithMaxBudgetUSD(budget float64) Option {
 func WithMaxThinkingTokens(tokens int) Option {
 	return func(o *Options) {
 		o.maxThinkingTokens = tokens
+	}
+}
+
+// WithThinking configures the model's thinking behavior.
+// When set, this takes precedence over WithMaxThinkingTokens.
+func WithThinking(config ThinkingConfig) Option {
+	return func(o *Options) {
+		o.thinking = config
+	}
+}
+
+// WithEffort sets the effort level ("low", "medium", "high", "max").
+func WithEffort(level string) Option {
+	return func(o *Options) {
+		o.effort = level
+	}
+}
+
+// WithOutputFormat sets the output format configuration.
+// The format should follow the structure {"type":"json_schema","schema":{...}}.
+// When set, this takes precedence over WithJSONSchemaOutput for the CLI arg.
+func WithOutputFormat(format map[string]any) Option {
+	return func(o *Options) {
+		o.outputFormat = format
 	}
 }
 

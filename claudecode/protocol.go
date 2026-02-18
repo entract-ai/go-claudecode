@@ -72,6 +72,10 @@ func (r *ControlRouter) Initialize(ctx context.Context) (map[string]any, error) 
 		"hooks":   hooksConfig,
 	}
 
+	if len(r.options.agents) > 0 {
+		request["agents"] = r.options.agents
+	}
+
 	timeout, err := getEnvDurationWithDefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", DefaultInitializeTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("initialize: %w", err)
@@ -218,6 +222,7 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 			ToolName              string         `json:"tool_name"`
 			Input                 map[string]any `json:"input"`
 			PermissionSuggestions []any          `json:"permission_suggestions"`
+			BlockedPath           string         `json:"blocked_path"`
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
@@ -226,6 +231,7 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 
 	permCtx := ToolPermissionContext{
 		Suggestions: parsePermissionSuggestions(request.Request.PermissionSuggestions),
+		BlockedPath: request.Request.BlockedPath,
 	}
 
 	result, err := r.options.canUseTool(ctx, request.Request.ToolName, request.Request.Input, permCtx)
@@ -369,10 +375,42 @@ func parseHookInput(input map[string]any) HookInput {
 			BaseHookInput:  base,
 			StopHookActive: getBool(input, "stop_hook_active"),
 		}
+	case "PostToolUseFailure":
+		return PostToolUseFailureInput{
+			BaseHookInput: base,
+			ToolName:      getString(input, "tool_name"),
+			ToolInput:     getMap(input, "tool_input"),
+			ToolUseID:     getString(input, "tool_use_id"),
+			Error:         getString(input, "error"),
+			IsInterrupt:   getBool(input, "is_interrupt"),
+		}
+	case "Notification":
+		return NotificationInput{
+			BaseHookInput:    base,
+			Message:          getString(input, "message"),
+			Title:            getString(input, "title"),
+			NotificationType: getString(input, "notification_type"),
+		}
 	case "SubagentStop":
 		return SubagentStopInput{
-			BaseHookInput:  base,
-			StopHookActive: getBool(input, "stop_hook_active"),
+			BaseHookInput:       base,
+			StopHookActive:      getBool(input, "stop_hook_active"),
+			AgentID:             getString(input, "agent_id"),
+			AgentTranscriptPath: getString(input, "agent_transcript_path"),
+			AgentType:           getString(input, "agent_type"),
+		}
+	case "SubagentStart":
+		return SubagentStartInput{
+			BaseHookInput: base,
+			AgentID:       getString(input, "agent_id"),
+			AgentType:     getString(input, "agent_type"),
+		}
+	case "PermissionRequest":
+		return PermissionRequestInput{
+			BaseHookInput:         base,
+			ToolName:              getString(input, "tool_name"),
+			ToolInput:             getMap(input, "tool_input"),
+			PermissionSuggestions: getSlice(input, "permission_suggestions"),
 		}
 	case "PreCompact":
 		return PreCompactInput{
@@ -401,6 +439,13 @@ func getBool(m map[string]any, key string) bool {
 
 func getMap(m map[string]any, key string) map[string]any {
 	if v, ok := m[key].(map[string]any); ok {
+		return v
+	}
+	return nil
+}
+
+func getSlice(m map[string]any, key string) []any {
+	if v, ok := m[key].([]any); ok {
 		return v
 	}
 	return nil

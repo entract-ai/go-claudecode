@@ -447,8 +447,25 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--max-budget-usd", fmt.Sprintf("%f", t.options.maxBudgetUSD))
 	}
 
-	if t.options.maxThinkingTokens > 0 {
-		args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", t.options.maxThinkingTokens))
+	// Resolve thinking tokens: WithThinking takes precedence over WithMaxThinkingTokens
+	maxThinkingTokens := t.options.maxThinkingTokens
+	if t.options.thinking != nil {
+		switch tc := t.options.thinking.(type) {
+		case ThinkingEnabled:
+			maxThinkingTokens = tc.BudgetTokens
+		case ThinkingDisabled:
+			maxThinkingTokens = 0
+		case ThinkingAdaptive:
+			maxThinkingTokens = 0 // omit the flag for adaptive
+		}
+	}
+
+	if maxThinkingTokens > 0 {
+		args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", maxThinkingTokens))
+	}
+
+	if t.options.effort != "" {
+		args = append(args, "--effort", t.options.effort)
 	}
 
 	// Model
@@ -515,22 +532,21 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--include-partial-messages")
 	}
 
-	// JSON schema output
-	if t.options.jsonSchemaOutput != nil {
+	// JSON schema output: outputFormat takes precedence over jsonSchemaOutput
+	if t.options.outputFormat != nil {
+		if schema, ok := t.options.outputFormat["schema"]; ok {
+			schemaJSON, err := json.Marshal(schema)
+			if err != nil {
+				return nil, fmt.Errorf("marshal output format schema: %w", err)
+			}
+			args = append(args, "--json-schema", string(schemaJSON))
+		}
+	} else if t.options.jsonSchemaOutput != nil {
 		schemaJSON, err := json.Marshal(t.options.jsonSchemaOutput)
 		if err != nil {
 			return nil, fmt.Errorf("marshal JSON schema: %w", err)
 		}
 		args = append(args, "--json-schema", string(schemaJSON))
-	}
-
-	// Agents
-	if len(t.options.agents) > 0 {
-		agentsJSON, err := json.Marshal(t.options.agents)
-		if err != nil {
-			return nil, fmt.Errorf("marshal agents: %w", err)
-		}
-		args = append(args, "--agents", string(agentsJSON))
 	}
 
 	// Plugins

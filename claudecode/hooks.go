@@ -9,12 +9,16 @@ import (
 type HookEvent string
 
 const (
-	HookPreToolUse       HookEvent = "PreToolUse"
-	HookPostToolUse      HookEvent = "PostToolUse"
-	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
-	HookStop             HookEvent = "Stop"
-	HookSubagentStop     HookEvent = "SubagentStop"
-	HookPreCompact       HookEvent = "PreCompact"
+	HookPreToolUse          HookEvent = "PreToolUse"
+	HookPostToolUse         HookEvent = "PostToolUse"
+	HookPostToolUseFailure  HookEvent = "PostToolUseFailure"
+	HookUserPromptSubmit    HookEvent = "UserPromptSubmit"
+	HookNotification        HookEvent = "Notification"
+	HookStop                HookEvent = "Stop"
+	HookSubagentStop        HookEvent = "SubagentStop"
+	HookSubagentStart       HookEvent = "SubagentStart"
+	HookPreCompact          HookEvent = "PreCompact"
+	HookPermissionRequest   HookEvent = "PermissionRequest"
 )
 
 // HookCallback is the function signature for hook callbacks.
@@ -82,13 +86,57 @@ type StopInput struct {
 
 func (StopInput) hookInputMarker() {}
 
+// PostToolUseFailureInput is the input for PostToolUseFailure hooks.
+type PostToolUseFailureInput struct {
+	BaseHookInput
+	ToolName    string `json:"tool_name"`
+	ToolInput   map[string]any `json:"tool_input"`
+	ToolUseID   string `json:"tool_use_id"`
+	Error       string `json:"error"`
+	IsInterrupt bool   `json:"is_interrupt"`
+}
+
+func (PostToolUseFailureInput) hookInputMarker() {}
+
+// NotificationInput is the input for Notification hooks.
+type NotificationInput struct {
+	BaseHookInput
+	Message          string `json:"message"`
+	Title            string `json:"title"`
+	NotificationType string `json:"notification_type"`
+}
+
+func (NotificationInput) hookInputMarker() {}
+
 // SubagentStopInput is the input for SubagentStop hooks.
 type SubagentStopInput struct {
 	BaseHookInput
-	StopHookActive bool `json:"stop_hook_active"`
+	StopHookActive      bool   `json:"stop_hook_active"`
+	AgentID             string `json:"agent_id"`
+	AgentTranscriptPath string `json:"agent_transcript_path"`
+	AgentType           string `json:"agent_type"`
 }
 
 func (SubagentStopInput) hookInputMarker() {}
+
+// SubagentStartInput is the input for SubagentStart hooks.
+type SubagentStartInput struct {
+	BaseHookInput
+	AgentID   string `json:"agent_id"`
+	AgentType string `json:"agent_type"`
+}
+
+func (SubagentStartInput) hookInputMarker() {}
+
+// PermissionRequestInput is the input for PermissionRequest hooks.
+type PermissionRequestInput struct {
+	BaseHookInput
+	ToolName              string         `json:"tool_name"`
+	ToolInput             map[string]any `json:"tool_input"`
+	PermissionSuggestions []any          `json:"permission_suggestions,omitzero"`
+}
+
+func (PermissionRequestInput) hookInputMarker() {}
 
 // PreCompactInput is the input for PreCompact hooks.
 type PreCompactInput struct {
@@ -135,12 +183,38 @@ type PreToolUseSpecificOutput struct {
 	PermissionDecision       string         `json:"permissionDecision,omitzero"` // "allow", "deny", "ask"
 	PermissionDecisionReason string         `json:"permissionDecisionReason,omitzero"`
 	UpdatedInput             map[string]any `json:"updatedInput,omitzero"`
+	AdditionalContext        string         `json:"additionalContext,omitzero"`
 }
 
 // PostToolUseSpecificOutput is hook-specific output for PostToolUse.
 type PostToolUseSpecificOutput struct {
-	HookEventName     string `json:"hookEventName"` // "PostToolUse"
+	HookEventName        string `json:"hookEventName"` // "PostToolUse"
+	AdditionalContext    string `json:"additionalContext,omitzero"`
+	UpdatedMCPToolOutput any    `json:"updatedMCPToolOutput,omitzero"`
+}
+
+// PostToolUseFailureSpecificOutput is hook-specific output for PostToolUseFailure.
+type PostToolUseFailureSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"` // "PostToolUseFailure"
 	AdditionalContext string `json:"additionalContext,omitzero"`
+}
+
+// NotificationSpecificOutput is hook-specific output for Notification.
+type NotificationSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"` // "Notification"
+	AdditionalContext string `json:"additionalContext,omitzero"`
+}
+
+// SubagentStartSpecificOutput is hook-specific output for SubagentStart.
+type SubagentStartSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"` // "SubagentStart"
+	AdditionalContext string `json:"additionalContext,omitzero"`
+}
+
+// PermissionRequestSpecificOutput is hook-specific output for PermissionRequest.
+type PermissionRequestSpecificOutput struct {
+	HookEventName string         `json:"hookEventName"` // "PermissionRequest"
+	Decision      map[string]any `json:"decision,omitzero"`
 }
 
 // UserPromptSubmitSpecificOutput is hook-specific output for UserPromptSubmit.
