@@ -200,22 +200,40 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "4096", args[idx+1])
 	})
 
-	t.Run("with thinking disabled", func(t *testing.T) {
+	t.Run("with thinking disabled passes zero", func(t *testing.T) {
 		opts := applyOptions(WithThinking(ThinkingDisabled{}))
 		transport := NewSubprocessTransport(opts)
 		args, err := transport.buildArgs()
 		require.NoError(t, err)
 
-		assert.NotContains(t, args, "--max-thinking-tokens")
+		idx := indexOf(args, "--max-thinking-tokens")
+		require.GreaterOrEqual(t, idx, 0, "--max-thinking-tokens should be present for disabled thinking")
+		assert.Equal(t, "0", args[idx+1], "disabled thinking should pass 0")
 	})
 
-	t.Run("with thinking adaptive", func(t *testing.T) {
+	t.Run("with thinking adaptive defaults to 32000", func(t *testing.T) {
 		opts := applyOptions(WithThinking(ThinkingAdaptive{}))
 		transport := NewSubprocessTransport(opts)
 		args, err := transport.buildArgs()
 		require.NoError(t, err)
 
-		assert.NotContains(t, args, "--max-thinking-tokens")
+		idx := indexOf(args, "--max-thinking-tokens")
+		require.GreaterOrEqual(t, idx, 0, "--max-thinking-tokens should be present for adaptive thinking")
+		assert.Equal(t, "32000", args[idx+1], "adaptive thinking should default to 32000")
+	})
+
+	t.Run("with thinking adaptive respects explicit max tokens", func(t *testing.T) {
+		opts := applyOptions(
+			WithMaxThinkingTokens(16000),
+			WithThinking(ThinkingAdaptive{}),
+		)
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--max-thinking-tokens")
+		require.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "16000", args[idx+1], "adaptive thinking should respect explicit max tokens")
 	})
 
 	t.Run("thinking overrides maxThinkingTokens", func(t *testing.T) {
@@ -306,6 +324,15 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.GreaterOrEqual(t, idx, 0)
 		assert.Equal(t, "", args[idx+1])
 	})
+}
+
+func TestBuildArgs_NoPrintFlag(t *testing.T) {
+	// After the Query rewrite, --print should never be emitted by buildArgs.
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+	args, err := transport.buildArgs()
+	require.NoError(t, err)
+	assert.NotContains(t, args, "--print", "buildArgs should never emit --print after Query rewrite")
 }
 
 func TestCompareVersions(t *testing.T) {

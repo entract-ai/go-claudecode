@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -83,4 +85,46 @@ func TestRegistryReregister(t *testing.T) {
 	definitions := registry.Definitions()
 	require.Len(t, definitions, 1, "re-registering should not create duplicates")
 	assert.Equal(t, "second version", definitions[0].Description)
+}
+
+func TestRegistryConcurrentAccess(t *testing.T) {
+	registry := NewRegistry()
+	const goroutines = 100
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 3)
+
+	// Concurrent Register calls
+	for i := range goroutines {
+		go func(n int) {
+			defer wg.Done()
+			tool := &stubTool{
+				name:   fmt.Sprintf("Tool%d", n),
+				schema: fmt.Sprintf(`{"name":"Tool%d","description":"tool %d","inputSchema":{"type":"object"}}`, n, n),
+			}
+			_ = registry.Register(tool)
+		}(i)
+	}
+
+	// Concurrent Definitions calls
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			_ = registry.Definitions()
+		}()
+	}
+
+	// Concurrent Get calls
+	for i := range goroutines {
+		go func(n int) {
+			defer wg.Done()
+			_, _ = registry.Get(fmt.Sprintf("Tool%d", n))
+		}(i)
+	}
+
+	wg.Wait()
+
+	// All 100 tools should be registered
+	defs := registry.Definitions()
+	assert.Len(t, defs, goroutines)
 }

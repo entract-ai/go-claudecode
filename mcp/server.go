@@ -242,10 +242,6 @@ func (s *Server) handleCallTool(ctx context.Context, req Request) (resp *Respons
 	if params.Name == "" {
 		return errorResponse(req.ID, errInvalidParams, "invalid params", "tool name is required"), nil
 	}
-	if len(params.Task) > 0 && !bytes.Equal(bytes.TrimSpace(params.Task), []byte("null")) {
-		return errorResponse(req.ID, errInvalidParams, "task augmentation not supported", nil), nil
-	}
-
 	tool, ok := s.registry.Get(params.Name)
 	if !ok {
 		return errorResponse(req.ID, errMethodNotFound, "tool not found", params.Name), nil

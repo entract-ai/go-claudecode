@@ -124,6 +124,10 @@ type Policy struct {
 	// When true, all file reads are allowed by default (matching sandbox-runtime behavior).
 	// When false, only paths in ReadOnlyMounts and ReadWriteMounts are readable.
 	//
+	// Note: upstream sandbox-runtime defaults AllowAllReads to true. We intentionally
+	// default to false for defense-in-depth: callers must opt in to broad read access.
+	// This is safer for library consumers who may not realize the security implications.
+	//
 	// This option is useful for sandboxing applications like Claude Code that need to read
 	// system files, libraries, and other paths but should only write to specific directories.
 	// For running untrusted code (like Python scripts), leave this false for maximum isolation.
@@ -135,8 +139,8 @@ type Policy struct {
 	// network connections.
 	//
 	// - macOS: Seatbelt restricts network access to only the proxy ports
-	// - Linux: Full network namespace isolation (--unshare-net); proxy listens on
-	//   localhost TCP sockets accessible within the isolated namespace
+	// - Linux: Full network namespace isolation (--unshare-net); Unix socket bridge
+	//   forwards connections from inside the namespace to the host-side proxy
 	//
 	// The proxy must be explicitly created and closed by the caller:
 	//   proxy, err := NewNetworkProxy(filter)

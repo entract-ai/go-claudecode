@@ -289,7 +289,7 @@ type Options struct {
 	// Limits
 	maxTurns          int
 	maxBudgetUSD      float64
-	maxThinkingTokens int
+	maxThinkingTokens *int
 
 	// Model
 	model         string
@@ -334,8 +334,6 @@ type Options struct {
 	stderrCallback          func(string)
 	streamingMode           bool
 
-	// Print mode prompt (internal use)
-	printPrompt *string
 }
 
 // Option is a functional option for configuring a Claude Code session.
@@ -484,7 +482,7 @@ func WithMaxBudgetUSD(budget float64) Option {
 // WithMaxThinkingTokens sets the maximum thinking tokens.
 func WithMaxThinkingTokens(tokens int) Option {
 	return func(o *Options) {
-		o.maxThinkingTokens = tokens
+		o.maxThinkingTokens = &tokens
 	}
 }
 

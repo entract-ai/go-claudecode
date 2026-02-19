@@ -222,6 +222,11 @@ func buildEnv(policy *Policy, tmpDir string) []string {
 		env = append(env, "TMPDIR="+tmpDir)
 	}
 
+	// Always set SANDBOX_RUNTIME=1 to indicate we're inside a sandbox.
+	// This matches upstream sandbox-runtime behavior.
+	env = filterEnvVar(env, "SANDBOX_RUNTIME")
+	env = append(env, "SANDBOX_RUNTIME=1")
+
 	// Apply custom environment variables from Policy.Env
 	// These override any existing values with the same name
 	if len(policy.Env) > 0 {
