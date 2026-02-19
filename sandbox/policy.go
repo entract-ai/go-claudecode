@@ -140,7 +140,8 @@ type Policy struct {
 	//
 	// - macOS: Seatbelt restricts network access to only the proxy ports
 	// - Linux: Full network namespace isolation (--unshare-net); Unix socket bridge
-	//   forwards connections from inside the namespace to the host-side proxy
+	//   forwards connections from inside the namespace to the host-side proxy.
+	//   Requires socat to be installed (checked at runtime).
 	//
 	// The proxy must be explicitly created and closed by the caller:
 	//   proxy, err := NewNetworkProxy(filter)
@@ -150,6 +151,10 @@ type Policy struct {
 	//
 	// Environment variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY) are automatically
 	// set in the sandboxed process to use the proxy.
+	//
+	// On Linux, bridge cleanup is tied to context cancellation. When using
+	// Command() directly (not Exec()), pass a cancellable context and cancel it
+	// after the command finishes to ensure bridge resources are released.
 	//
 	// Note: If NetworkProxy is set, AllowNetwork and AllowLocalhostOnly are ignored.
 	NetworkProxy *NetworkProxy

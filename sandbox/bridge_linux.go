@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // linuxNetworkBridge forwards connections from Unix domain sockets (inside the
@@ -92,6 +93,9 @@ func (b *linuxNetworkBridge) acceptLoop(ln net.Listener, targetAddr string) {
 			case <-b.closed:
 				return
 			default:
+				// Brief backoff to prevent CPU spin on persistent errors
+				// (e.g., too many open files).
+				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 		}
