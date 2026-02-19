@@ -9,16 +9,16 @@ import (
 type HookEvent string
 
 const (
-	HookPreToolUse          HookEvent = "PreToolUse"
-	HookPostToolUse         HookEvent = "PostToolUse"
-	HookPostToolUseFailure  HookEvent = "PostToolUseFailure"
-	HookUserPromptSubmit    HookEvent = "UserPromptSubmit"
-	HookNotification        HookEvent = "Notification"
-	HookStop                HookEvent = "Stop"
-	HookSubagentStop        HookEvent = "SubagentStop"
-	HookSubagentStart       HookEvent = "SubagentStart"
-	HookPreCompact          HookEvent = "PreCompact"
-	HookPermissionRequest   HookEvent = "PermissionRequest"
+	HookPreToolUse         HookEvent = "PreToolUse"
+	HookPostToolUse        HookEvent = "PostToolUse"
+	HookPostToolUseFailure HookEvent = "PostToolUseFailure"
+	HookUserPromptSubmit   HookEvent = "UserPromptSubmit"
+	HookNotification       HookEvent = "Notification"
+	HookStop               HookEvent = "Stop"
+	HookSubagentStop       HookEvent = "SubagentStop"
+	HookSubagentStart      HookEvent = "SubagentStart"
+	HookPreCompact         HookEvent = "PreCompact"
+	HookPermissionRequest  HookEvent = "PermissionRequest"
 )
 
 // HookCallback is the function signature for hook callbacks.
@@ -56,6 +56,7 @@ type PreToolUseInput struct {
 	BaseHookInput
 	ToolName  string         `json:"tool_name"`
 	ToolInput map[string]any `json:"tool_input"`
+	ToolUseID string         `json:"tool_use_id"`
 }
 
 func (PreToolUseInput) hookInputMarker() {}
@@ -66,6 +67,7 @@ type PostToolUseInput struct {
 	ToolName     string         `json:"tool_name"`
 	ToolInput    map[string]any `json:"tool_input"`
 	ToolResponse any            `json:"tool_response"`
+	ToolUseID    string         `json:"tool_use_id"`
 }
 
 func (PostToolUseInput) hookInputMarker() {}
@@ -89,11 +91,11 @@ func (StopInput) hookInputMarker() {}
 // PostToolUseFailureInput is the input for PostToolUseFailure hooks.
 type PostToolUseFailureInput struct {
 	BaseHookInput
-	ToolName    string `json:"tool_name"`
+	ToolName    string         `json:"tool_name"`
 	ToolInput   map[string]any `json:"tool_input"`
-	ToolUseID   string `json:"tool_use_id"`
-	Error       string `json:"error"`
-	IsInterrupt bool   `json:"is_interrupt"`
+	ToolUseID   string         `json:"tool_use_id"`
+	Error       string         `json:"error"`
+	IsInterrupt bool           `json:"is_interrupt"`
 }
 
 func (PostToolUseFailureInput) hookInputMarker() {}

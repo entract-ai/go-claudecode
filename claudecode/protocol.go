@@ -357,6 +357,7 @@ func parseHookInput(input map[string]any) HookInput {
 			BaseHookInput: base,
 			ToolName:      getString(input, "tool_name"),
 			ToolInput:     getMap(input, "tool_input"),
+			ToolUseID:     getString(input, "tool_use_id"),
 		}
 	case "PostToolUse":
 		return PostToolUseInput{
@@ -364,6 +365,7 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolName:      getString(input, "tool_name"),
 			ToolInput:     getMap(input, "tool_input"),
 			ToolResponse:  input["tool_response"],
+			ToolUseID:     getString(input, "tool_use_id"),
 		}
 	case "UserPromptSubmit":
 		return UserPromptSubmitInput{

@@ -83,7 +83,7 @@ func TestHookSpecificOutput_Fields(t *testing.T) {
 
 	t.Run("PostToolUseSpecificOutput has UpdatedMCPToolOutput", func(t *testing.T) {
 		output := PostToolUseSpecificOutput{
-			HookEventName:       "PostToolUse",
+			HookEventName:        "PostToolUse",
 			AdditionalContext:    "context",
 			UpdatedMCPToolOutput: map[string]any{"modified": true},
 		}
@@ -102,6 +102,7 @@ func TestParseHookInput(t *testing.T) {
 			"permission_mode": "default",
 			"tool_name":       "Bash",
 			"tool_input":      map[string]any{"command": "ls"},
+			"tool_use_id":     "tu_123",
 		}
 
 		result := parseHookInput(input)
@@ -111,6 +112,7 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "sess_123", preToolUse.SessionID)
 		assert.Equal(t, "Bash", preToolUse.ToolName)
 		assert.Equal(t, "ls", preToolUse.ToolInput["command"])
+		assert.Equal(t, "tu_123", preToolUse.ToolUseID)
 	})
 
 	t.Run("PostToolUse", func(t *testing.T) {
@@ -122,6 +124,7 @@ func TestParseHookInput(t *testing.T) {
 			"tool_name":       "Bash",
 			"tool_input":      map[string]any{"command": "ls"},
 			"tool_response":   "file1.txt\nfile2.txt",
+			"tool_use_id":     "tu_456",
 		}
 
 		result := parseHookInput(input)
@@ -130,6 +133,7 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "PostToolUse", postToolUse.HookEventName)
 		assert.Equal(t, "Bash", postToolUse.ToolName)
 		assert.Equal(t, "file1.txt\nfile2.txt", postToolUse.ToolResponse)
+		assert.Equal(t, "tu_456", postToolUse.ToolUseID)
 	})
 
 	t.Run("UserPromptSubmit", func(t *testing.T) {
@@ -249,12 +253,12 @@ func TestParseHookInput(t *testing.T) {
 
 	t.Run("PermissionRequest", func(t *testing.T) {
 		input := map[string]any{
-			"hook_event_name":       "PermissionRequest",
-			"session_id":            "sess_123",
-			"transcript_path":       "/path/to/transcript",
-			"cwd":                   "/home/user",
-			"tool_name":             "Write",
-			"tool_input":            map[string]any{"path": "/etc/passwd"},
+			"hook_event_name":        "PermissionRequest",
+			"session_id":             "sess_123",
+			"transcript_path":        "/path/to/transcript",
+			"cwd":                    "/home/user",
+			"tool_name":              "Write",
+			"tool_input":             map[string]any{"path": "/etc/passwd"},
 			"permission_suggestions": []any{"allow"},
 		}
 
