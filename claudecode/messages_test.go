@@ -156,9 +156,9 @@ func TestParseAssistantMessage(t *testing.T) {
 				"type": "assistant",
 				"message": {
 					"model": "claude-3-5-sonnet",
-					"content": [],
-					"error": "rate_limit"
-				}
+					"content": []
+				},
+				"error": "rate_limit"
 			}`,
 		},
 	}
@@ -177,6 +177,24 @@ func TestParseAssistantMessage(t *testing.T) {
 			require.NotNil(t, assistantMsg)
 		})
 	}
+}
+
+func TestParseAssistantMessage_ErrorFromTopLevel(t *testing.T) {
+	input := `{
+		"type": "assistant",
+		"message": {
+			"model": "<synthetic>",
+			"content": [{"type": "text", "text": "Rate limit exceeded"}]
+		},
+		"error": "rate_limit"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+	assert.Equal(t, ErrRateLimit, assistantMsg.Error)
 }
 
 func TestParseResultMessage(t *testing.T) {

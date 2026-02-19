@@ -183,11 +183,11 @@ func parseUserMessage(raw json.RawMessage) (*UserMessage, error) {
 func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 	var holder struct {
 		Message struct {
-			Content json.RawMessage       `json:"content"`
-			Model   string                `json:"model"`
-			Error   AssistantMessageError `json:"error"`
+			Content json.RawMessage `json:"content"`
+			Model   string          `json:"model"`
 		} `json:"message"`
 		ParentToolUseID string `json:"parent_tool_use_id"`
+		Error           AssistantMessageError `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &holder); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse assistant message: %v", err)}
@@ -202,7 +202,7 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 		Content:         blocks,
 		Model:           holder.Message.Model,
 		ParentToolUseID: holder.ParentToolUseID,
-		Error:           holder.Message.Error,
+		Error:           holder.Error,
 	}, nil
 }
 
