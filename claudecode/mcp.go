@@ -44,11 +44,15 @@ func handleSDKMCPRequest(ctx context.Context, config *MCPSDKConfig, message map[
 					},
 				}
 			}
-			tools = append(tools, map[string]any{
+			toolData := map[string]any{
 				"name":        schema["name"],
 				"description": schema["description"],
 				"inputSchema": schema["inputSchema"],
-			})
+			}
+			if annotations, ok := schema["annotations"]; ok && annotations != nil {
+				toolData["annotations"] = annotations
+			}
+			tools = append(tools, toolData)
 		}
 		return map[string]any{
 			"jsonrpc": "2.0",
@@ -94,15 +98,6 @@ func handleSDKMCPRequest(ctx context.Context, config *MCPSDKConfig, message map[
 		argsJSON, _ := json.Marshal(arguments)
 		output := tool.Call(ctx, string(argsJSON))
 
-		// Parse output to check for errors
-		var structured map[string]any
-		isError := false
-		if err := json.Unmarshal([]byte(output), &structured); err == nil {
-			if errField, ok := structured["error"]; ok && errField != nil && errField != "" {
-				isError = true
-			}
-		}
-
 		result := map[string]any{
 			"content": []map[string]any{
 				{
@@ -111,8 +106,17 @@ func handleSDKMCPRequest(ctx context.Context, config *MCPSDKConfig, message map[
 				},
 			},
 		}
-		if isError {
-			result["isError"] = true
+
+		// Parse structured output when possible to preserve rich content blocks
+		// (text/image) and tool-level error semantics.
+		var structured map[string]any
+		if err := json.Unmarshal([]byte(output), &structured); err == nil && structured != nil {
+			if parsedContent := parseToolOutputContent(structured); len(parsedContent) > 0 {
+				result["content"] = parsedContent
+			}
+			if hasToolError(structured) {
+				result["isError"] = true
+			}
 		}
 
 		return map[string]any{
@@ -138,4 +142,69 @@ func handleSDKMCPRequest(ctx context.Context, config *MCPSDKConfig, message map[
 			},
 		}
 	}
+}
+
+func parseToolOutputContent(structured map[string]any) []map[string]any {
+	rawContent, ok := structured["content"]
+	if !ok {
+		return nil
+	}
+	items, ok := rawContent.([]any)
+	if !ok {
+		return nil
+	}
+
+	content := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		blockType, _ := block["type"].(string)
+		switch blockType {
+		case "text":
+			text, _ := block["text"].(string)
+			content = append(content, map[string]any{
+				"type": "text",
+				"text": text,
+			})
+		case "image":
+			imageBlock := map[string]any{
+				"type": "image",
+			}
+			if data, ok := block["data"].(string); ok {
+				imageBlock["data"] = data
+			}
+			if mimeType, ok := block["mimeType"].(string); ok {
+				imageBlock["mimeType"] = mimeType
+			}
+			content = append(content, imageBlock)
+		default:
+			// Preserve unknown block types for forward compatibility.
+			content = append(content, block)
+		}
+	}
+
+	return content
+}
+
+func hasToolError(structured map[string]any) bool {
+	if raw, ok := structured["isError"]; ok {
+		if v, ok := raw.(bool); ok {
+			return v
+		}
+	}
+	if raw, ok := structured["is_error"]; ok {
+		if v, ok := raw.(bool); ok {
+			return v
+		}
+	}
+	raw, ok := structured["error"]
+	if !ok || raw == nil {
+		return false
+	}
+	if s, ok := raw.(string); ok {
+		return s != ""
+	}
+	return true
 }

@@ -257,3 +257,85 @@ func TestHandleSDKMCPRequest_ToolsCall_ValidArguments(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test-value", args["name"])
 }
+
+func TestHandleSDKMCPRequest_ToolsList_IncludesAnnotations(t *testing.T) {
+	tool := &mockTool{
+		name: "annotated_tool",
+		schemaJSON: `{
+			"name": "annotated_tool",
+			"description": "An annotated tool",
+			"inputSchema": {"type": "object"},
+			"annotations": {"readOnlyHint": true}
+		}`,
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	tools, ok := resultMap["tools"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+
+	annotations, ok := tools[0]["annotations"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, annotations["readOnlyHint"])
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_PassesThroughImageContent(t *testing.T) {
+	tool := &mockTool{
+		name:       "image_tool",
+		schemaJSON: `{"name": "image_tool", "description": "An image tool", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{"type": "text", "text": "Generated chart"},
+					{"type": "image", "data": "iVBOR...", "mimeType": "image/png"}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "image_tool",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 2)
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Equal(t, "Generated chart", content[0]["text"])
+	assert.Equal(t, "image", content[1]["type"])
+	assert.Equal(t, "iVBOR...", content[1]["data"])
+	assert.Equal(t, "image/png", content[1]["mimeType"])
+}
