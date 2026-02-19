@@ -112,6 +112,10 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 		})
 	}
 
+	// Best-effort cleanup for bubblewrap mount-point artifacts tied to this
+	// command's context lifecycle.
+	context.AfterFunc(ctx, cleanupAfterCommand)
+
 	return cmd, nil
 }
 
@@ -359,6 +363,7 @@ func bubblewrapArgs(policy *Policy, name string, argv []string, bridge *linuxNet
 				args = append(args, "--ro-bind", "/dev/null", sym)
 				continue
 			}
+			recordBwrapMountPoint(denyPath)
 			args = append(args, "--ro-bind", "/dev/null", denyPath)
 			continue
 		}

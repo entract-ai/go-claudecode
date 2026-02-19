@@ -177,6 +177,55 @@ func TestBubblewrapArgs_DenyWritePaths_NonExistent(t *testing.T) {
 	assert.True(t, foundDevNull, "Should mount /dev/null at non-existent deny path")
 }
 
+func TestIntegrationExec_DenyWritePaths_NonExistent_CleansMountPointArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not available")
+	}
+
+	workDir := t.TempDir()
+	denyPath := filepath.Join(workDir, ".ghost-deny-file")
+
+	policy := DefaultPolicy()
+	policy.WorkDir = workDir
+	policy.DenyWritePaths = []string{denyPath}
+
+	err := policy.Exec(context.Background(), "/bin/echo", "hello")
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(denyPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"non-existent deny path mount point should be cleaned up after command execution")
+}
+
+func TestCleanupAfterCommand_RemovesTrackedEmptyFileMountPoint(t *testing.T) {
+	workDir := t.TempDir()
+	mountPoint := filepath.Join(workDir, ".ghost-deny-file")
+	require.NoError(t, os.WriteFile(mountPoint, nil, 0o644))
+
+	recordBwrapMountPoint(mountPoint)
+	cleanupAfterCommand()
+
+	_, err := os.Stat(mountPoint)
+	assert.True(t, os.IsNotExist(err), "cleanup should remove tracked empty file mount points")
+}
+
+func TestCleanupAfterCommand_PreservesTrackedNonEmptyDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	mountPoint := filepath.Join(workDir, "preserve-dir")
+	require.NoError(t, os.MkdirAll(mountPoint, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mountPoint, "keep.txt"), []byte("keep"), 0o644))
+
+	recordBwrapMountPoint(mountPoint)
+	cleanupAfterCommand()
+
+	info, err := os.Stat(mountPoint)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir(), "cleanup should preserve non-empty directories")
+}
+
 func TestBubblewrapArgs_DenyReadPaths_Directory(t *testing.T) {
 	t.Parallel()
 

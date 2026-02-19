@@ -146,7 +146,9 @@ func (p *Policy) Exec(ctx context.Context, name string, arg ...string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	err = cmd.Run()
+	cleanupAfterCommand()
+	return err
 }
 
 // mountSet tracks mounted paths to prevent duplicates and check coverage.
