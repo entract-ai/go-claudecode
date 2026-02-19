@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestApplyOptions(t *testing.T) {
@@ -77,7 +78,8 @@ func TestApplyOptions(t *testing.T) {
 		)
 		assert.Equal(t, 10, opts.maxTurns)
 		assert.Equal(t, 1.0, opts.maxBudgetUSD)
-		assert.Equal(t, 5000, opts.maxThinkingTokens)
+		require.NotNil(t, opts.maxThinkingTokens)
+		assert.Equal(t, 5000, *opts.maxThinkingTokens)
 	})
 
 	t.Run("with model", func(t *testing.T) {

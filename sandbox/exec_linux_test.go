@@ -3,9 +3,15 @@
 package sandbox
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +23,7 @@ func TestBubblewrapArgs_SelectiveUnsharing(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = "/tmp"
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Should use selective unsharing, not --unshare-all
@@ -38,7 +44,7 @@ func TestBubblewrapArgs_DefaultNoIPCUTSUnshare(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = "/tmp"
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// By default, IPC and UTS should NOT be unshared
@@ -55,7 +61,7 @@ func TestBubblewrapArgs_UnshareIPC(t *testing.T) {
 	policy.WorkDir = "/tmp"
 	policy.UnshareIPC = true
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, args, "--unshare-ipc", "Should unshare IPC when UnshareIPC is true")
@@ -68,7 +74,7 @@ func TestBubblewrapArgs_UnshareUTS(t *testing.T) {
 	policy.WorkDir = "/tmp"
 	policy.UnshareUTS = true
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, args, "--unshare-uts", "Should unshare UTS when UnshareUTS is true")
@@ -81,7 +87,7 @@ func TestBubblewrapArgs_NetworkAllowed(t *testing.T) {
 	policy.WorkDir = "/tmp"
 	policy.AllowNetwork = true
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// PID should still be unshared
@@ -105,7 +111,7 @@ func TestBubblewrapArgs_NetworkProxy(t *testing.T) {
 	policy.AllowNetwork = true // Even with AllowNetwork, proxy forces net unsharing
 	policy.NetworkProxy = proxy
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// PID should be unshared
@@ -127,7 +133,7 @@ func TestBubblewrapArgs_DenyWritePaths(t *testing.T) {
 	require.NoError(t, os.MkdirAll(denyPath, 0o755))
 	policy.DenyWritePaths = []string{denyPath}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// The deny path should be re-mounted read-only after the writable mount
@@ -156,7 +162,7 @@ func TestBubblewrapArgs_DenyWritePaths_NonExistent(t *testing.T) {
 	// Deny a path that doesn't exist yet (should mount /dev/null to prevent creation)
 	policy.DenyWritePaths = []string{"/tmp/nonexistent-deny-test-path"}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Should have a /dev/null mount at the non-existent path
@@ -183,7 +189,7 @@ func TestBubblewrapArgs_DenyReadPaths_Directory(t *testing.T) {
 	policy.AllowAllReads = true
 	policy.DenyReadPaths = []string{secretDir}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Directory deny-read should use --tmpfs to hide the directory
@@ -209,7 +215,7 @@ func TestBubblewrapArgs_DenyReadPaths_File(t *testing.T) {
 	policy.AllowAllReads = true
 	policy.DenyReadPaths = []string{secretFile}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// File deny-read should use --ro-bind /dev/null
@@ -232,7 +238,7 @@ func TestBubblewrapArgs_DenyReadPaths_NonExistent(t *testing.T) {
 	policy.AllowAllReads = true
 	policy.DenyReadPaths = []string{"/tmp/nonexistent-deny-read-test-path"}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Non-existent paths should be silently skipped
@@ -290,7 +296,7 @@ func TestBubblewrapArgs_EnableWeakerNestedSandbox(t *testing.T) {
 	policy.WorkDir = "/tmp"
 	policy.EnableWeakerNestedSandbox = true
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Should NOT mount /proc when in weaker nested sandbox mode (Docker)
@@ -317,7 +323,7 @@ func TestBubblewrapArgs_NormalProcMount(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WorkDir = "/tmp"
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Should mount /proc in normal mode
@@ -397,7 +403,7 @@ func TestBubblewrapArgs_SymlinkDenyPath(t *testing.T) {
 	policy.AllowAllReads = true
 	policy.DenyWritePaths = []string{filepath.Join(symlink, "commands")}
 
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 
 	// Should mount /dev/null at the symlink to block it
@@ -411,12 +417,90 @@ func TestBubblewrapArgs_SymlinkDenyPath(t *testing.T) {
 	assert.True(t, found, "Should mount /dev/null at symlink within writable path")
 }
 
+func TestCommandContext_ClaudeTmpdir(t *testing.T) {
+	t.Run("respects CLAUDE_TMPDIR", func(t *testing.T) {
+		original := os.Getenv("CLAUDE_TMPDIR")
+		os.Setenv("CLAUDE_TMPDIR", "/custom/tmp")
+		defer func() {
+			if original != "" {
+				os.Setenv("CLAUDE_TMPDIR", original)
+			} else {
+				os.Unsetenv("CLAUDE_TMPDIR")
+			}
+		}()
+
+		policy := DefaultPolicy()
+		policy.ProvideTmp = true
+
+		cmd, err := policy.commandContext(context.Background(), "echo", "hello")
+		require.NoError(t, err)
+
+		var tmpdir string
+		for _, e := range cmd.Env {
+			if strings.HasPrefix(e, "TMPDIR=") {
+				tmpdir = e
+			}
+		}
+		assert.Equal(t, "TMPDIR=/custom/tmp", tmpdir,
+			"TMPDIR should be set to CLAUDE_TMPDIR value")
+	})
+
+	t.Run("defaults to /tmp when CLAUDE_TMPDIR unset", func(t *testing.T) {
+		original := os.Getenv("CLAUDE_TMPDIR")
+		os.Unsetenv("CLAUDE_TMPDIR")
+		defer func() {
+			if original != "" {
+				os.Setenv("CLAUDE_TMPDIR", original)
+			}
+		}()
+
+		policy := DefaultPolicy()
+		policy.ProvideTmp = true
+
+		cmd, err := policy.commandContext(context.Background(), "echo", "hello")
+		require.NoError(t, err)
+
+		var tmpdir string
+		for _, e := range cmd.Env {
+			if strings.HasPrefix(e, "TMPDIR=") {
+				tmpdir = e
+			}
+		}
+		assert.Equal(t, "TMPDIR=/tmp", tmpdir,
+			"TMPDIR should default to /tmp when CLAUDE_TMPDIR is unset")
+	})
+}
+
+func TestIntegration_SandboxRuntime_EnvVar(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	policy := DefaultPolicy()
+
+	cmd, err := policy.Command(context.Background(), "env")
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err)
+
+	lines := strings.Split(string(output), "\n")
+	var found bool
+	for _, line := range lines {
+		if line == "SANDBOX_RUNTIME=1" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "SANDBOX_RUNTIME=1 should be present in sandbox environment, got:\n%s", string(output))
+}
+
 func TestBubblewrapArgs_HidesEtcSshConfigD(t *testing.T) {
 	t.Parallel()
 	policy := DefaultPolicy()
 	policy.WorkDir = "/tmp"
 	policy.AllowAllReads = true
-	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"})
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, nil)
 	require.NoError(t, err)
 	if PathExists("/etc/ssh/ssh_config.d") {
 		found := false
@@ -428,4 +512,246 @@ func TestBubblewrapArgs_HidesEtcSshConfigD(t *testing.T) {
 		}
 		assert.True(t, found, "Should hide /etc/ssh/ssh_config.d with tmpfs when it exists")
 	}
+}
+
+func TestBubblewrapArgs_WithBridge_BindsMountsSockets(t *testing.T) {
+	t.Parallel()
+
+	// Create a real bridge to get valid socket paths
+	tcpLn1, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer tcpLn1.Close()
+	tcpLn2, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer tcpLn2.Close()
+
+	bridge, err := newLinuxNetworkBridge(tcpLn1.Addr().String(), tcpLn2.Addr().String())
+	require.NoError(t, err)
+	defer bridge.Close()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.NetworkProxy = proxy
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, bridge)
+	require.NoError(t, err)
+
+	// Should bind-mount the HTTP socket
+	foundHTTP := false
+	for i, arg := range args {
+		if arg == "--bind" && i+2 < len(args) && args[i+1] == bridge.httpSocketPath && args[i+2] == bridge.httpSocketPath {
+			foundHTTP = true
+			break
+		}
+	}
+	assert.True(t, foundHTTP, "Should bind-mount HTTP socket into sandbox")
+
+	// Should bind-mount the SOCKS socket
+	foundSOCKS := false
+	for i, arg := range args {
+		if arg == "--bind" && i+2 < len(args) && args[i+1] == bridge.socksSocketPath && args[i+2] == bridge.socksSocketPath {
+			foundSOCKS = true
+			break
+		}
+	}
+	assert.True(t, foundSOCKS, "Should bind-mount SOCKS socket into sandbox")
+}
+
+func TestBubblewrapArgs_WithBridge_WrapsCommandWithSocat(t *testing.T) {
+	t.Parallel()
+
+	tcpLn1, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer tcpLn1.Close()
+	tcpLn2, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer tcpLn2.Close()
+
+	bridge, err := newLinuxNetworkBridge(tcpLn1.Addr().String(), tcpLn2.Addr().String())
+	require.NoError(t, err)
+	defer bridge.Close()
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = "/tmp"
+	policy.NetworkProxy = proxy
+
+	args, err := bubblewrapArgs(policy, "echo", []string{"echo", "hello"}, bridge)
+	require.NoError(t, err)
+
+	// Find the -- separator
+	sepIdx := -1
+	for i, arg := range args {
+		if arg == "--" {
+			sepIdx = i
+			break
+		}
+	}
+	require.Greater(t, sepIdx, -1, "Should have -- separator")
+
+	// After --, the command should be wrapped with bash -c '...'
+	afterSep := args[sepIdx+1:]
+	require.GreaterOrEqual(t, len(afterSep), 3, "Should have bash -c 'script' after --")
+	assert.Equal(t, "bash", afterSep[0], "Should use bash as wrapper")
+	assert.Equal(t, "-c", afterSep[1], "Should use -c flag")
+
+	// The script should contain socat commands
+	script := afterSep[2]
+	assert.Contains(t, script, "socat TCP-LISTEN:3128", "Script should set up HTTP socat on port 3128")
+	assert.Contains(t, script, "socat TCP-LISTEN:1080", "Script should set up SOCKS socat on port 1080")
+	assert.Contains(t, script, bridge.httpSocketPath, "Script should reference HTTP socket path")
+	assert.Contains(t, script, bridge.socksSocketPath, "Script should reference SOCKS socket path")
+	assert.Contains(t, script, `exec "$@"`, "Script should exec the original command")
+
+	// The original command should follow as positional args
+	assert.Equal(t, "_", afterSep[3], "Should have _ placeholder for $0")
+	assert.Equal(t, "echo", afterSep[4], "Should have original command")
+	assert.Equal(t, "hello", afterSep[5], "Should have original args")
+}
+
+func TestCommandContext_WithProxy_EnvVarsPointToLocalhost(t *testing.T) {
+	if _, err := exec.LookPath("socat"); err != nil {
+		t.Skip("socat not available")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	policy := DefaultPolicy()
+	policy.NetworkProxy = proxy
+
+	cmd, err := policy.commandContext(context.Background(), "echo", "hello")
+	require.NoError(t, err)
+
+	// Env should have proxy vars pointing to localhost:3128/1080
+	var httpProxy, allProxy string
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "HTTP_PROXY=") {
+			httpProxy = e
+		}
+		if strings.HasPrefix(e, "ALL_PROXY=") {
+			allProxy = e
+		}
+	}
+	assert.Equal(t, "HTTP_PROXY=http://localhost:3128", httpProxy,
+		"HTTP_PROXY should point to localhost:3128 inside sandbox")
+	assert.Equal(t, "ALL_PROXY=socks5h://localhost:1080", allProxy,
+		"ALL_PROXY should point to localhost:1080 inside sandbox")
+}
+
+func TestCommandContext_WithProxy_BridgeCleanedUpOnContextCancel(t *testing.T) {
+	if _, err := exec.LookPath("socat"); err != nil {
+		t.Skip("socat not available")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	policy := DefaultPolicy()
+	policy.NetworkProxy = proxy
+
+	cmd, err := policy.commandContext(ctx, "echo", "hello")
+	require.NoError(t, err)
+	_ = cmd // don't need to run it
+
+	// Find the bridge socket directory from the bwrap arguments.
+	// The cmd.Args contains --bind <socket-path> <socket-path> entries.
+	var socketDir string
+	for i, arg := range cmd.Args {
+		if arg == "--bind" && i+1 < len(cmd.Args) && strings.Contains(cmd.Args[i+1], "claude-bridge-") {
+			socketDir = filepath.Dir(cmd.Args[i+1])
+			break
+		}
+	}
+	require.NotEmpty(t, socketDir, "should find bridge socket directory in bwrap args")
+
+	// Verify socket directory exists before cancel
+	_, err = os.Stat(socketDir)
+	require.NoError(t, err, "bridge socket directory should exist before context cancel")
+
+	// Cancel the context, which should trigger bridge cleanup
+	cancel()
+
+	// Poll for cleanup (avoid flaky time.Sleep)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(socketDir)
+		return os.IsNotExist(err)
+	}, 2*time.Second, 10*time.Millisecond,
+		"bridge socket directory should be removed after context cancel")
+}
+
+func TestIntegration_NetworkBridge_CurlThroughProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	if _, err := exec.LookPath("socat"); err != nil {
+		t.Skip("socat not available")
+	}
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bwrap not available")
+	}
+
+	// Create a proxy that allows everything
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	// Start a simple HTTP test server on localhost
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 1024)
+				conn.Read(buf)
+				conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nhello sandbox"))
+			}()
+		}
+	}()
+
+	policy := DefaultPolicy()
+	policy.NetworkProxy = proxy
+
+	// Use python to make an HTTP request through the proxy
+	pythonPath, err := findPython()
+	if err != nil {
+		t.Skip("python not available")
+	}
+	pPolicy := pythonPolicy()
+	pPolicy.NetworkProxy = proxy
+
+	// Clear NO_PROXY so Python routes through the HTTP proxy instead of
+	// connecting directly. Direct connections fail inside the isolated
+	// network namespace (--unshare-net).
+	script := fmt.Sprintf(
+		`import os; os.environ['NO_PROXY']=''; os.environ['no_proxy']=''; `+
+			`import urllib.request; print(urllib.request.urlopen("http://%s").read().decode())`,
+		ln.Addr().String(),
+	)
+
+	cmd, err := pPolicy.Command(context.Background(), pythonPath, "-c", script)
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	t.Logf("Output: %s", string(output))
+	require.NoError(t, err, "curl through proxy should succeed, output: %s", string(output))
+	assert.Contains(t, string(output), "hello sandbox")
 }

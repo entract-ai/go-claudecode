@@ -52,9 +52,31 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 	// Build full argv (name + args)
 	argv := append([]string{name}, arg...)
 
+	// When a network proxy is configured, we need a Unix socket bridge to
+	// forward connections from inside the isolated network namespace to the
+	// host-side proxy TCP ports. socat is used inside the sandbox to convert
+	// TCP connections to Unix socket connections.
+	var bridge *linuxNetworkBridge
+	if p.NetworkProxy != nil {
+		if _, err := exec.LookPath("socat"); err != nil {
+			return nil, fmt.Errorf("sandbox: socat is required for network proxy on Linux: %w", err)
+		}
+
+		httpProxyAddr := extractHostPort(p.NetworkProxy.HTTPAddr())
+		socksProxyAddr := p.NetworkProxy.SOCKSAddr()
+
+		bridge, err = newLinuxNetworkBridge(httpProxyAddr, socksProxyAddr)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: create network bridge: %w", err)
+		}
+	}
+
 	// Generate bubblewrap arguments
-	bwrapArgs, err := bubblewrapArgs(p, name, argv)
+	bwrapArgs, err := bubblewrapArgs(p, name, argv, bridge)
 	if err != nil {
+		if bridge != nil {
+			bridge.Close()
+		}
 		return nil, fmt.Errorf("sandbox: build bubblewrap args: %w", err)
 	}
 
@@ -62,22 +84,90 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 	// bwrapArgs[0] is bwrapPath itself, skip it for exec.CommandContext
 	cmd := exec.CommandContext(ctx, bwrapPath, bwrapArgs[1:]...)
 
-	// Build environment with proper TMPDIR handling and custom env vars
-	// On Linux with ProvideTmp, we mount a tmpfs at /tmp, so set TMPDIR=/tmp
+	// Build environment with proper TMPDIR handling and custom env vars.
+	// Respect CLAUDE_TMPDIR if set, otherwise default to /tmp.
+	// On Linux, /tmp is already an isolated tmpfs inside bwrap.
 	tmpDir := ""
 	if p.ProvideTmp {
-		tmpDir = "/tmp"
+		tmpDir = os.Getenv("CLAUDE_TMPDIR")
+		if tmpDir == "" {
+			tmpDir = "/tmp"
+		}
 	}
 	cmd.Env = buildEnv(p, tmpDir)
 
-	// If network proxy is configured, filter existing proxy vars and add our own
+	// If network proxy is configured, set env vars pointing to the socat
+	// listeners inside the sandbox (localhost:3128/1080), not the host proxy.
 	if p.NetworkProxy != nil {
 		cmd.Env = filterProxyEnvVars(cmd.Env)
-		cmd.Env = append(cmd.Env, p.NetworkProxy.Env()...)
+		cmd.Env = append(cmd.Env, bridgeProxyEnv()...)
+
+		// Clean up bridge when context is canceled or times out.
+		// This provides deterministic cleanup tied to context lifecycle,
+		// which is more idiomatic Go than runtime.SetFinalizer.
+		// If the context is never canceled (e.g., context.Background()),
+		// the OS cleans up Unix sockets and temp files on process exit.
+		context.AfterFunc(ctx, func() {
+			bridge.Close()
+		})
 	}
 
 	return cmd, nil
 }
+
+// extractHostPort strips a URL scheme prefix and returns "host:port".
+// e.g., "http://127.0.0.1:3128" -> "127.0.0.1:3128"
+func extractHostPort(addr string) string {
+	if idx := strings.Index(addr, "://"); idx >= 0 {
+		addr = addr[idx+3:]
+	}
+	return addr
+}
+
+// bridgeProxyEnv returns environment variables configuring HTTP and SOCKS5 proxies
+// to point to the socat TCP listeners inside the sandbox namespace.
+// HTTP proxy: localhost:3128, SOCKS proxy: localhost:1080.
+func bridgeProxyEnv() []string {
+	const httpAddr = "http://localhost:3128"
+	const socksURL = "socks5h://localhost:1080"
+	const socksAddr = "localhost:1080"
+
+	env := []string{
+		"HTTP_PROXY=" + httpAddr,
+		"HTTPS_PROXY=" + httpAddr,
+		"http_proxy=" + httpAddr,
+		"https_proxy=" + httpAddr,
+
+		"NO_PROXY=" + noProxyAddresses,
+		"no_proxy=" + noProxyAddresses,
+
+		"ALL_PROXY=" + socksURL,
+		"all_proxy=" + socksURL,
+
+		"FTP_PROXY=" + socksURL,
+		"ftp_proxy=" + socksURL,
+
+		"DOCKER_HTTP_PROXY=" + httpAddr,
+		"DOCKER_HTTPS_PROXY=" + httpAddr,
+		"DOCKER_NO_PROXY=" + noProxyAddresses,
+
+		"GRPC_PROXY=" + socksURL,
+		"grpc_proxy=" + socksURL,
+
+		"RSYNC_PROXY=" + socksAddr,
+
+		"CLOUDSDK_PROXY_TYPE=http",
+		"CLOUDSDK_PROXY_ADDRESS=127.0.0.1",
+		"CLOUDSDK_PROXY_PORT=3128",
+	}
+
+	return env
+}
+
+// Fixed TCP ports socat listens on inside the sandbox for proxy connections.
+// Matches upstream sandbox-runtime conventions.
+const socatHTTPPort = 3128
+const socatSOCKSPort = 1080
 
 // findSymlinkInPath walks path components using os.Lstat (no symlink following).
 // If any component is a symlink within one of the allowedWritePaths, returns
@@ -108,7 +198,9 @@ func findSymlinkInPath(targetPath string, allowedWritePaths []string) string {
 
 // bubblewrapArgs builds the argument list for bwrap.
 // Returns the full argv including bwrapPath at [0].
-func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error) {
+// When bridge is non-nil, the Unix sockets are bind-mounted into the sandbox
+// and the command is wrapped with socat to forward TCP traffic through them.
+func bubblewrapArgs(policy *Policy, name string, argv []string, bridge *linuxNetworkBridge) ([]string, error) {
 	// Use Policy.WorkDir if specified, otherwise current directory
 	wd := policy.WorkDir
 	if wd == "" {
@@ -146,6 +238,13 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 	// Must be mounted BEFORE proxy sockets so they can be bind-mounted on top
 	if policy.ProvideTmp {
 		args = append(args, "--tmpfs", "/tmp")
+	}
+
+	// Bind-mount Unix sockets for network bridge (if present).
+	// These must come after /tmp is mounted but before the command.
+	if bridge != nil {
+		args = append(args, "--bind", bridge.httpSocketPath, bridge.httpSocketPath)
+		args = append(args, "--bind", bridge.socksSocketPath, bridge.socksSocketPath)
 	}
 
 	// Mount read-only paths from policy (with canonicalization)
@@ -298,9 +397,28 @@ func bubblewrapArgs(policy *Policy, name string, argv []string) ([]string, error
 		}
 	}
 
-	// Append the separator and the actual command + arguments
+	// Append the separator and the actual command + arguments.
+	// When a network bridge is present, wrap the command with socat processes
+	// that forward TCP connections to the Unix sockets bridging to the host proxy.
 	args = append(args, "--")
-	args = append(args, argv...)
+	if bridge != nil {
+		// Build a bash wrapper that:
+		// 1. Starts socat to listen on TCP:3128 and forward to the HTTP unix socket
+		// 2. Starts socat to listen on TCP:1080 and forward to the SOCKS unix socket
+		// 3. Traps EXIT to kill socat background processes
+		// 4. Execs the original command via "$@"
+		script := fmt.Sprintf(
+			"socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 & "+
+				"socat TCP-LISTEN:%d,fork,reuseaddr UNIX-CONNECT:%s >/dev/null 2>&1 & "+
+				`trap "kill %%1 %%2 2>/dev/null; exit" EXIT; exec "$@"`,
+			socatHTTPPort, bridge.httpSocketPath,
+			socatSOCKSPort, bridge.socksSocketPath,
+		)
+		args = append(args, "bash", "-c", script, "_")
+		args = append(args, argv...)
+	} else {
+		args = append(args, argv...)
+	}
 
 	return args, nil
 }

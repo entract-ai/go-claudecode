@@ -132,7 +132,13 @@ func (p *Policy) Command(ctx context.Context, name string, arg ...string) (*exec
 // Exec executes the command inside a sandbox and waits for completion.
 // Stdin, stdout, stderr are inherited from the current process.
 // This is a convenience wrapper for Command().Run().
+//
+// On Linux with NetworkProxy, the derived context is canceled after Run()
+// returns, which triggers deterministic cleanup of the Unix socket bridge.
 func (p *Policy) Exec(ctx context.Context, name string, arg ...string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	cmd, err := p.Command(ctx, name, arg...)
 	if err != nil {
 		return err
@@ -221,6 +227,11 @@ func buildEnv(policy *Policy, tmpDir string) []string {
 		env = filterEnvVar(env, "TMPDIR")
 		env = append(env, "TMPDIR="+tmpDir)
 	}
+
+	// Always set SANDBOX_RUNTIME=1 to indicate we're inside a sandbox.
+	// This matches upstream sandbox-runtime behavior.
+	env = filterEnvVar(env, "SANDBOX_RUNTIME")
+	env = append(env, "SANDBOX_RUNTIME=1")
 
 	// Apply custom environment variables from Policy.Env
 	// These override any existing values with the same name

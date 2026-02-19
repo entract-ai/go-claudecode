@@ -274,6 +274,53 @@ func TestServerListTools(t *testing.T) {
 	assert.Equal(t, "CreateModel", result.Tools[0].Name)
 }
 
+func TestServerListToolsWithCursorParam(t *testing.T) {
+	registry := NewRegistry()
+	tool := &stubTool{
+		name:        "MyTool",
+		description: "a tool",
+		schema:      `{"name":"MyTool","description":"a tool","inputSchema":{"type":"object"}}`,
+	}
+	require.NoError(t, registry.Register(tool))
+
+	server, err := NewServer(registry, Implementation{Name: "test", Version: "1.0"})
+	require.NoError(t, err)
+
+	req := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"cursor":"some-cursor-value"}}`)
+	resp, err := server.handleRaw(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Nil(t, resp.Error, "cursor parameter should be accepted without error")
+
+	result, ok := resp.Result.(ListToolsResult)
+	require.True(t, ok)
+	require.Len(t, result.Tools, 1)
+	assert.Equal(t, "MyTool", result.Tools[0].Name)
+}
+
+func TestServerListToolsNoNextCursor(t *testing.T) {
+	registry := NewRegistry()
+	tool := &stubTool{
+		name:        "MyTool",
+		description: "a tool",
+		schema:      `{"name":"MyTool","description":"a tool","inputSchema":{"type":"object"}}`,
+	}
+	require.NoError(t, registry.Register(tool))
+
+	server, err := NewServer(registry, Implementation{Name: "test", Version: "1.0"})
+	require.NoError(t, err)
+
+	req := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	resp, err := server.handleRaw(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Nil(t, resp.Error)
+
+	result, ok := resp.Result.(ListToolsResult)
+	require.True(t, ok)
+	assert.Empty(t, result.NextCursor, "single-page server should not set nextCursor")
+}
+
 func TestServerListToolsInvalidParams(t *testing.T) {
 	server, err := NewServer(NewRegistry(), Implementation{Name: "test", Version: "1.0"})
 	require.NoError(t, err)
@@ -350,7 +397,7 @@ func TestServerCallToolMissing(t *testing.T) {
 	assert.Equal(t, errMethodNotFound, resp.Error.Code)
 }
 
-func TestServerCallToolTaskUnsupported(t *testing.T) {
+func TestServerCallToolTaskAccepted(t *testing.T) {
 	registry := NewRegistry()
 	tool := &stubTool{
 		name:        "CreateModel",
@@ -366,8 +413,34 @@ func TestServerCallToolTaskUnsupported(t *testing.T) {
 	resp, err := server.handleRaw(context.Background(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	require.NotNil(t, resp.Error)
-	assert.Equal(t, errInvalidParams, resp.Error.Code)
+	require.Nil(t, resp.Error, "non-null task should be accepted per MCP 2025-11-25")
+
+	result, ok := resp.Result.(CallToolResult)
+	require.True(t, ok)
+	assert.False(t, result.IsError)
+}
+
+func TestServerCallToolNullTask(t *testing.T) {
+	registry := NewRegistry()
+	tool := &stubTool{
+		name:        "CreateModel",
+		description: "create model",
+		schema:      `{"name":"CreateModel","description":"create model","inputSchema":{"type":"object"},"outputSchema":{"type":"object"}}`,
+		result:      `{"modelName":"main","error":null}`,
+	}
+	require.NoError(t, registry.Register(tool))
+
+	server, err := NewServer(registry, Implementation{Name: "simlin-mcp", Version: "dev"})
+	require.NoError(t, err)
+	req := json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"CreateModel","arguments":{},"task":null}}`)
+	resp, err := server.handleRaw(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Nil(t, resp.Error, "null task should still succeed")
+
+	result, ok := resp.Result.(CallToolResult)
+	require.True(t, ok)
+	assert.False(t, result.IsError)
 }
 
 func TestServerCallToolPanicRecovery(t *testing.T) {

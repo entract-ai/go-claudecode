@@ -66,10 +66,14 @@ for msg := range client.ReceiveResponse(ctx) {
 
 ```go
 policy := sandbox.DefaultPolicy()
-policy.ReadWriteMounts = append(policy.ReadWriteMounts, sandbox.Mount{Path: "/my/project"})
+policy.ReadWriteMounts = append(policy.ReadWriteMounts,
+    sandbox.Mount{Source: "/my/project", Target: "/my/project"})
 policy.AllowNetwork = false
 
-cmd := policy.Command(ctx, "claude", "--print", "Hello")
+cmd, err := policy.Command(ctx, "claude", "--print", "Hello")
+if err != nil {
+    log.Fatal(err)
+}
 output, err := cmd.CombinedOutput()
 ```
 

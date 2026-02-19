@@ -10,11 +10,8 @@ import (
 )
 
 // Query performs a one-shot query with a string prompt.
-// Uses --print mode (no bidirectional communication).
-//
-// Print mode does not support hooks or can_use_tool callbacks because stdin is
-// closed immediately (no bidirectional control protocol). Use QueryWithInput
-// for features that require the control protocol.
+// Internally delegates to QueryWithInput using the streaming control protocol,
+// which means hooks, SDK MCP servers, and canUseTool callbacks are all supported.
 func Query(ctx context.Context, prompt string, opts ...Option) <-chan MessageOrError {
 	ch := make(chan MessageOrError, 100)
 
@@ -22,33 +19,15 @@ func Query(ctx context.Context, prompt string, opts ...Option) <-chan MessageOrE
 		defer close(ch)
 
 		if prompt == "" {
-			ch <- MessageOrError{Err: fmt.Errorf("print mode requires a non-empty prompt")}
+			ch <- MessageOrError{Err: fmt.Errorf("query requires a non-empty prompt")}
 			return
 		}
 
-		options := applyOptions(opts...)
+		input := make(chan InputMessage, 1)
+		input <- NewUserInput(prompt)
+		close(input)
 
-		// Validate that print mode doesn't have options that require streaming mode
-		if len(options.hooks) > 0 {
-			ch <- MessageOrError{Err: fmt.Errorf("hooks require streaming mode; use QueryWithInput instead of Query")}
-			return
-		}
-		if options.canUseTool != nil {
-			ch <- MessageOrError{Err: fmt.Errorf("can_use_tool callback requires streaming mode; use QueryWithInput instead of Query")}
-			return
-		}
-		options.streamingMode = false
-		options.printPrompt = &prompt
-
-		transport := NewSubprocessTransport(options)
-
-		if err := transport.Connect(ctx); err != nil {
-			ch <- MessageOrError{Err: fmt.Errorf("connect: %w", err)}
-			return
-		}
-		defer transport.Close(ctx)
-
-		for msg := range transport.ReadMessages(ctx) {
+		for msg := range QueryWithInput(ctx, input, opts...) {
 			ch <- msg
 		}
 	}()
@@ -73,9 +52,9 @@ func QuerySync(ctx context.Context, prompt string, opts ...Option) ([]Message, e
 }
 
 // QueryWithInput performs a query with a streaming input channel.
-// Required for hooks and can_use_tool callback.
-// Unlike Query (which uses --print mode), this opens a bidirectional connection
-// that supports the control protocol.
+// This opens a bidirectional connection that supports the full control protocol,
+// enabling multi-turn conversations, hooks, SDK MCP servers, and can_use_tool callbacks.
+// Query delegates to this function internally.
 func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Option) <-chan MessageOrError {
 	ch := make(chan MessageOrError, 100)
 

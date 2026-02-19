@@ -17,26 +17,30 @@ func TestQuery_Validation(t *testing.T) {
 		ch := Query(ctx, "")
 		msg := <-ch
 		assert.Error(t, msg.Err)
-		assert.Contains(t, msg.Err.Error(), "non-empty prompt")
+		assert.Contains(t, msg.Err.Error(), "requires a non-empty prompt")
 	})
 
-	t.Run("rejects hooks in print mode", func(t *testing.T) {
+	t.Run("accepts hooks", func(t *testing.T) {
+		// Query now delegates to QueryWithInput (streaming), so hooks are supported.
+		// We can't fully exercise it without a CLI, but we verify no upfront rejection.
 		ch := Query(ctx, "test prompt", WithHook(HookPreToolUse, HookMatcher{
 			Matcher: "Bash",
 			Hooks:   []HookCallback{},
 		}))
 		msg := <-ch
-		assert.Error(t, msg.Err)
-		assert.Contains(t, msg.Err.Error(), "hooks require streaming mode")
+		// The error should be about connecting (no CLI), not about hooks being rejected.
+		require.Error(t, msg.Err)
+		assert.NotContains(t, msg.Err.Error(), "hooks require streaming mode")
 	})
 
-	t.Run("rejects can_use_tool in print mode", func(t *testing.T) {
+	t.Run("accepts can_use_tool", func(t *testing.T) {
+		// Query now delegates to QueryWithInput (streaming), so canUseTool is supported.
 		ch := Query(ctx, "test prompt", WithCanUseTool(func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
 			return PermissionAllow{}, nil
 		}))
 		msg := <-ch
-		assert.Error(t, msg.Err)
-		assert.Contains(t, msg.Err.Error(), "can_use_tool callback requires streaming mode")
+		require.Error(t, msg.Err)
+		assert.NotContains(t, msg.Err.Error(), "can_use_tool callback requires streaming mode")
 	})
 }
 

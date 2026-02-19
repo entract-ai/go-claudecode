@@ -459,6 +459,53 @@ func TestBuildEnv(t *testing.T) {
 		assert.True(t, hasCustomVar, "CUSTOM_VAR should be set")
 	})
 
+	t.Run("includes SANDBOX_RUNTIME", func(t *testing.T) {
+		policy := &Policy{}
+		env := buildEnv(policy, "")
+
+		var found bool
+		for _, e := range env {
+			if e == "SANDBOX_RUNTIME=1" {
+				found = true
+			}
+		}
+		assert.True(t, found, "SANDBOX_RUNTIME=1 should be set")
+
+		// Count SANDBOX_RUNTIME entries - should be exactly one
+		count := 0
+		for _, e := range env {
+			if strings.HasPrefix(e, "SANDBOX_RUNTIME=") {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "should have exactly one SANDBOX_RUNTIME")
+	})
+
+	t.Run("SANDBOX_RUNTIME overrides existing", func(t *testing.T) {
+		original := os.Getenv("SANDBOX_RUNTIME")
+		os.Setenv("SANDBOX_RUNTIME", "old_value")
+		defer func() {
+			if original != "" {
+				os.Setenv("SANDBOX_RUNTIME", original)
+			} else {
+				os.Unsetenv("SANDBOX_RUNTIME")
+			}
+		}()
+
+		policy := &Policy{}
+		env := buildEnv(policy, "")
+
+		// Should have exactly one SANDBOX_RUNTIME=1
+		var values []string
+		for _, e := range env {
+			if strings.HasPrefix(e, "SANDBOX_RUNTIME=") {
+				values = append(values, e)
+			}
+		}
+		assert.Len(t, values, 1, "should have exactly one SANDBOX_RUNTIME")
+		assert.Equal(t, "SANDBOX_RUNTIME=1", values[0])
+	})
+
 	t.Run("custom env vars override existing", func(t *testing.T) {
 		// Save and restore PATH
 		originalPath := os.Getenv("PATH")

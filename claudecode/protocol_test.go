@@ -2,7 +2,9 @@ package claudecode
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,6 +133,144 @@ func TestHandleCanUseTool_BlockedPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/etc/sensitive", receivedCtx.BlockedPath)
 }
+
+func TestControlRouter_HandleMessage_NonControlPassthrough(t *testing.T) {
+	// Non-control messages (user, assistant, system, result, stream events)
+	// should pass through HandleMessage and return handled=false.
+	opts := &Options{}
+	router := NewControlRouter(nil, opts)
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		msg  Message
+	}{
+		{"UserMessage", &UserMessage{Content: "hello"}},
+		{"AssistantMessage", &AssistantMessage{Content: []ContentBlock{TextBlock{Text: "test"}}}},
+		{"SystemMessage", &SystemMessage{Subtype: "init"}},
+		{"ResultMessage", &ResultMessage{Subtype: "success", SessionID: "s1"}},
+		{"StreamEvent", &StreamEvent{UUID: "u1", SessionID: "s1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handled, err := router.HandleMessage(ctx, tt.msg, nil)
+			require.NoError(t, err)
+			assert.False(t, handled, "%s should not be handled as control message", tt.name)
+		})
+	}
+}
+
+func TestControlRouter_HandleMessage_UnknownControlSubtype(t *testing.T) {
+	// When the CLI sends a control request with an unknown subtype,
+	// HandleMessage should return an error response (not panic or ignore).
+	transport := &writeCapturingTransport{}
+	opts := &Options{}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	msg := &ControlRequest{
+		Type:      "control_request",
+		RequestID: "req_99",
+	}
+	raw := []byte(`{
+		"type": "control_request",
+		"request_id": "req_99",
+		"request": {"subtype": "unknown_future_subtype"}
+	}`)
+
+	handled, err := router.HandleMessage(ctx, msg, raw)
+	require.NoError(t, err)
+	assert.True(t, handled, "control request should always be handled")
+
+	// The router should send an error response back to the transport
+	written := transport.lastWritten
+	assert.Contains(t, written, "control_response")
+	assert.Contains(t, written, "error")
+	assert.Contains(t, written, "unsupported control request subtype")
+}
+
+func TestControlRouter_HandleMessage_ControlCancelRequest(t *testing.T) {
+	// ControlCancelRequest should be handled (swallowed) without error.
+	opts := &Options{}
+	router := NewControlRouter(nil, opts)
+	ctx := context.Background()
+
+	msg := &ControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: "req_42",
+	}
+
+	handled, err := router.HandleMessage(ctx, msg, nil)
+	require.NoError(t, err)
+	assert.True(t, handled, "cancel requests should be handled")
+}
+
+func TestControlRouter_ConcurrentRequests(t *testing.T) {
+	// Verify that concurrent access to the control router is safe.
+	transport := &writeCapturingTransport{}
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			return PermissionAllow{}, nil
+		},
+	}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+
+			// Mix of operations: HandleMessage with various types, nextRequestID
+			switch idx % 4 {
+			case 0:
+				// Non-control passthrough
+				msg := &AssistantMessage{Content: []ContentBlock{TextBlock{Text: "test"}}}
+				_, _ = router.HandleMessage(ctx, msg, nil)
+			case 1:
+				// Generate request IDs concurrently
+				_ = router.nextRequestID()
+			case 2:
+				// Handle control request with can_use_tool subtype
+				msg := &ControlRequest{Type: "control_request", RequestID: fmt.Sprintf("req_%d", idx)}
+				raw := []byte(fmt.Sprintf(`{
+					"type": "control_request",
+					"request_id": "req_%d",
+					"request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {}}
+				}`, idx))
+				_, _ = router.HandleMessage(ctx, msg, raw)
+			case 3:
+				// Cancel request
+				msg := &ControlCancelRequest{Type: "control_cancel_request", RequestID: fmt.Sprintf("cancel_%d", idx)}
+				_, _ = router.HandleMessage(ctx, msg, nil)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// writeCapturingTransport captures the last written data for assertions.
+type writeCapturingTransport struct {
+	mu          sync.Mutex
+	lastWritten string
+}
+
+func (w *writeCapturingTransport) Connect(ctx context.Context) error                      { return nil }
+func (w *writeCapturingTransport) ReadMessages(ctx context.Context) <-chan MessageOrError  { return nil }
+func (w *writeCapturingTransport) Write(ctx context.Context, data string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lastWritten = data
+	return nil
+}
+func (w *writeCapturingTransport) EndInput(ctx context.Context) error                     { return nil }
+func (w *writeCapturingTransport) Close(ctx context.Context) error                        { return nil }
+func (w *writeCapturingTransport) IsReady() bool                                          { return true }
 
 func TestBuildHooksConfig(t *testing.T) {
 	// Suppress unused variable warning for context import

@@ -157,14 +157,6 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 		close(t.stderrDone)
 	}
 
-	// Close stdin immediately for non-streaming (print) mode
-	if !t.options.streamingMode && t.stdin != nil {
-		if err := t.stdin.Close(); err != nil {
-			return fmt.Errorf("close stdin for print mode: %w", err)
-		}
-		t.stdinClosed = true
-	}
-
 	t.ready = true
 	return nil
 }
@@ -448,20 +440,29 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 	}
 
 	// Resolve thinking tokens: WithThinking takes precedence over WithMaxThinkingTokens
-	maxThinkingTokens := t.options.maxThinkingTokens
+	var resolvedThinkingTokens *int
 	if t.options.thinking != nil {
 		switch tc := t.options.thinking.(type) {
 		case ThinkingEnabled:
-			maxThinkingTokens = tc.BudgetTokens
+			v := tc.BudgetTokens
+			resolvedThinkingTokens = &v
 		case ThinkingDisabled:
-			maxThinkingTokens = 0
+			v := 0
+			resolvedThinkingTokens = &v
 		case ThinkingAdaptive:
-			maxThinkingTokens = 0 // omit the flag for adaptive
+			if t.options.maxThinkingTokens != nil {
+				resolvedThinkingTokens = t.options.maxThinkingTokens
+			} else {
+				v := 32000
+				resolvedThinkingTokens = &v
+			}
 		}
+	} else if t.options.maxThinkingTokens != nil {
+		resolvedThinkingTokens = t.options.maxThinkingTokens
 	}
 
-	if maxThinkingTokens > 0 {
-		args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", maxThinkingTokens))
+	if resolvedThinkingTokens != nil {
+		args = append(args, "--max-thinking-tokens", fmt.Sprintf("%d", *resolvedThinkingTokens))
 	}
 
 	if t.options.effort != "" {
@@ -573,11 +574,6 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 	// Input format for streaming mode
 	if t.options.streamingMode {
 		args = append(args, "--input-format", "stream-json")
-	}
-
-	// Handle print mode - must come last because everything after -- is treated as arguments
-	if t.options.printPrompt != nil {
-		args = append(args, "--print", "--", *t.options.printPrompt)
 	}
 
 	return args, nil
