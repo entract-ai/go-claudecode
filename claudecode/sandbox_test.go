@@ -3,6 +3,8 @@ package claudecode
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/bpowers/go-claudecode/sandbox"
@@ -208,6 +210,31 @@ func TestNewClaudeCodeSandboxPolicy_VirtualEnvNoBinDir(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bin directory does not exist")
+}
+
+func TestNewClaudeCodeSandboxPolicy_ClaudeCliTmpDir(t *testing.T) {
+	workDir := t.TempDir()
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir)
+	require.NoError(t, err)
+
+	// The CLI creates a per-user tmp dir at /tmp/claude-<UID>/ for its internal
+	// sandbox operations. This must be in writable mounts.
+	expectedTmpDir := filepath.Join(os.TempDir(), "claude-"+strconv.Itoa(os.Getuid()))
+	if runtime.GOOS == "darwin" {
+		if resolved, err := filepath.EvalSymlinks(expectedTmpDir); err == nil {
+			expectedTmpDir = resolved
+		}
+	}
+
+	hasClaudeTmp := false
+	for _, m := range policy.ReadWriteMounts {
+		if m.Source == expectedTmpDir {
+			hasClaudeTmp = true
+			break
+		}
+	}
+	assert.True(t, hasClaudeTmp, "should have /tmp/claude-<UID> mounted read-write, want %s", expectedTmpDir)
 }
 
 func TestNewClaudeCodeSandboxPolicy_NoOptions(t *testing.T) {

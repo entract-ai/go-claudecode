@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 
 	"github.com/bpowers/go-claudecode/sandbox"
 )
@@ -112,6 +114,27 @@ func NewClaudeCodeSandboxPolicy(workDir string, opts ...SandboxOptions) (*sandbo
 	policy.ReadWriteMounts = append(policy.ReadWriteMounts, sandbox.Mount{
 		Source: claudeJSON,
 		Target: claudeJSON,
+	})
+
+	// Claude Code CLI creates a per-user tmp directory at /tmp/claude-<UID>/
+	// for its internal sandbox operations (heredocs, temp files, etc.). This
+	// path is separate from the ProvideTmp directory and must be writable.
+	claudeTmpDir := filepath.Join(os.TempDir(), "claude-"+strconv.Itoa(os.Getuid()))
+	if runtime.GOOS == "darwin" {
+		// On macOS, os.TempDir() returns /tmp which is a symlink to /private/tmp.
+		// Seatbelt operates on canonical paths, so resolve symlinks.
+		if resolved, err := filepath.EvalSymlinks(claudeTmpDir); err == nil {
+			claudeTmpDir = resolved
+		}
+	}
+	if !sandbox.PathExists(claudeTmpDir) {
+		if err := os.MkdirAll(claudeTmpDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create claude tmp directory: %w", err)
+		}
+	}
+	policy.ReadWriteMounts = append(policy.ReadWriteMounts, sandbox.Mount{
+		Source: claudeTmpDir,
+		Target: claudeTmpDir,
 	})
 
 	// Configure virtualenv if specified
