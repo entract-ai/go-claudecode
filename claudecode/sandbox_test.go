@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -218,9 +219,10 @@ func TestNewClaudeCodeSandboxPolicy_ClaudeCliTmpDir(t *testing.T) {
 	policy, err := NewClaudeCodeSandboxPolicy(workDir)
 	require.NoError(t, err)
 
-	// The CLI creates a per-user tmp dir at /tmp/claude-<UID>/ for its internal
-	// sandbox operations. This must be in writable mounts.
-	expectedTmpDir := filepath.Join(os.TempDir(), "claude-"+strconv.Itoa(os.Getuid()))
+	// The CLI hardcodes /tmp/claude-<UID>/ (not os.TempDir()) for its per-user
+	// tmp directory. On macOS, /tmp is a symlink to /private/tmp, and Seatbelt
+	// operates on canonical paths, so the resolved path must be used.
+	expectedTmpDir := filepath.Join("/tmp", "claude-"+strconv.Itoa(os.Getuid()))
 	if runtime.GOOS == "darwin" {
 		if resolved, err := filepath.EvalSymlinks(expectedTmpDir); err == nil {
 			expectedTmpDir = resolved
@@ -235,6 +237,30 @@ func TestNewClaudeCodeSandboxPolicy_ClaudeCliTmpDir(t *testing.T) {
 		}
 	}
 	assert.True(t, hasClaudeTmp, "should have /tmp/claude-<UID> mounted read-write, want %s", expectedTmpDir)
+}
+
+func TestClaudeCodeSandboxPolicy_CliTmpDirWritable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	workDir := t.TempDir()
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir)
+	require.NoError(t, err)
+
+	// The CLI creates subdirectories under /tmp/claude-<UID>/ for internal
+	// sandbox operations. Verify we can actually mkdir inside that path.
+	uid := strconv.Itoa(os.Getuid())
+	testSubdir := "sandbox-test-" + strconv.FormatInt(int64(os.Getpid()), 10)
+
+	cmd, err := policy.Command(context.Background(), "/bin/bash", "-c",
+		"mkdir -p /tmp/claude-"+uid+"/"+testSubdir+" && echo ok && rm -rf /tmp/claude-"+uid+"/"+testSubdir)
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "mkdir under /tmp/claude-<UID>/ should succeed in sandbox, output: %s", string(output))
+	assert.Contains(t, string(output), "ok")
 }
 
 func TestNewClaudeCodeSandboxPolicy_NoOptions(t *testing.T) {

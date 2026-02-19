@@ -119,10 +119,10 @@ func NewClaudeCodeSandboxPolicy(workDir string, opts ...SandboxOptions) (*sandbo
 	// Claude Code CLI creates a per-user tmp directory at /tmp/claude-<UID>/
 	// for its internal sandbox operations (heredocs, temp files, etc.). This
 	// path is separate from the ProvideTmp directory and must be writable.
-	claudeTmpDir := filepath.Join(os.TempDir(), "claude-"+strconv.Itoa(os.Getuid()))
+	claudeTmpDir := filepath.Join("/tmp", "claude-"+strconv.Itoa(os.Getuid()))
 	if runtime.GOOS == "darwin" {
-		// On macOS, os.TempDir() returns /tmp which is a symlink to /private/tmp.
-		// Seatbelt operates on canonical paths, so resolve symlinks.
+		// On macOS, /tmp is a symlink to /private/tmp. Seatbelt operates on
+		// canonical paths, so resolve symlinks.
 		if resolved, err := filepath.EvalSymlinks(claudeTmpDir); err == nil {
 			claudeTmpDir = resolved
 		}
