@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,7 @@ import (
 
 func TestQuery_Validation(t *testing.T) {
 	ctx := context.Background()
+	invalidCLIPath := filepath.Join(t.TempDir(), "missing-claude")
 
 	t.Run("rejects empty prompt", func(t *testing.T) {
 		ch := Query(ctx, "")
@@ -22,13 +24,13 @@ func TestQuery_Validation(t *testing.T) {
 
 	t.Run("accepts hooks", func(t *testing.T) {
 		// Query now delegates to QueryWithInput (streaming), so hooks are supported.
-		// We can't fully exercise it without a CLI, but we verify no upfront rejection.
+		// Use a guaranteed-missing CLI path so failure is deterministic and local.
 		ch := Query(ctx, "test prompt", WithHook(HookPreToolUse, HookMatcher{
 			Matcher: "Bash",
 			Hooks:   []HookCallback{},
-		}))
+		}), WithCLIPath(invalidCLIPath))
 		msg := <-ch
-		// The error should be about connecting (no CLI), not about hooks being rejected.
+		// The error should be about connecting/startup, not hooks being rejected.
 		require.Error(t, msg.Err)
 		assert.NotContains(t, msg.Err.Error(), "hooks require streaming mode")
 	})
@@ -37,7 +39,7 @@ func TestQuery_Validation(t *testing.T) {
 		// Query now delegates to QueryWithInput (streaming), so canUseTool is supported.
 		ch := Query(ctx, "test prompt", WithCanUseTool(func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
 			return PermissionAllow{}, nil
-		}))
+		}), WithCLIPath(invalidCLIPath))
 		msg := <-ch
 		require.Error(t, msg.Err)
 		assert.NotContains(t, msg.Err.Error(), "can_use_tool callback requires streaming mode")
