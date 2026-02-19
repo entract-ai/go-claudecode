@@ -132,7 +132,13 @@ func (p *Policy) Command(ctx context.Context, name string, arg ...string) (*exec
 // Exec executes the command inside a sandbox and waits for completion.
 // Stdin, stdout, stderr are inherited from the current process.
 // This is a convenience wrapper for Command().Run().
+//
+// On Linux with NetworkProxy, the derived context is canceled after Run()
+// returns, which triggers deterministic cleanup of the Unix socket bridge.
 func (p *Policy) Exec(ctx context.Context, name string, arg ...string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	cmd, err := p.Command(ctx, name, arg...)
 	if err != nil {
 		return err

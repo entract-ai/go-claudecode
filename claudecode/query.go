@@ -52,9 +52,9 @@ func QuerySync(ctx context.Context, prompt string, opts ...Option) ([]Message, e
 }
 
 // QueryWithInput performs a query with a streaming input channel.
-// Required for hooks and can_use_tool callback.
-// Unlike Query (which uses --print mode), this opens a bidirectional connection
-// that supports the control protocol.
+// This opens a bidirectional connection that supports the full control protocol,
+// enabling multi-turn conversations, hooks, SDK MCP servers, and can_use_tool callbacks.
+// Query delegates to this function internally.
 func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Option) <-chan MessageOrError {
 	ch := make(chan MessageOrError, 100)
 

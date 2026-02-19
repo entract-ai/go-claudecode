@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -103,9 +102,12 @@ func (p *Policy) commandContext(ctx context.Context, name string, arg ...string)
 		cmd.Env = filterProxyEnvVars(cmd.Env)
 		cmd.Env = append(cmd.Env, bridgeProxyEnv()...)
 
-		// Register finalizer to clean up bridge when cmd is garbage collected.
-		// Callers must hold the Cmd reference until after Wait() completes.
-		runtime.SetFinalizer(cmd, func(_ *exec.Cmd) {
+		// Clean up bridge when context is canceled or times out.
+		// This provides deterministic cleanup tied to context lifecycle,
+		// which is more idiomatic Go than runtime.SetFinalizer.
+		// If the context is never canceled (e.g., context.Background()),
+		// the OS cleans up Unix sockets and temp files on process exit.
+		context.AfterFunc(ctx, func() {
 			bridge.Close()
 		})
 	}
@@ -162,14 +164,10 @@ func bridgeProxyEnv() []string {
 	return env
 }
 
-// socatBridgePort is the fixed TCP port socat listens on inside the sandbox
-// for HTTP proxy connections. Matches upstream sandbox-runtime.
+// Fixed TCP ports socat listens on inside the sandbox for proxy connections.
+// Matches upstream sandbox-runtime conventions.
 const socatHTTPPort = 3128
-
-// socatSOCKSPort is the fixed TCP port socat listens on inside the sandbox
-// for SOCKS proxy connections. Matches upstream sandbox-runtime.
 const socatSOCKSPort = 1080
-
 
 // findSymlinkInPath walks path components using os.Lstat (no symlink following).
 // If any component is a symlink within one of the allowedWritePaths, returns

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -644,6 +645,50 @@ func TestCommandContext_WithProxy_EnvVarsPointToLocalhost(t *testing.T) {
 		"HTTP_PROXY should point to localhost:3128 inside sandbox")
 	assert.Equal(t, "ALL_PROXY=socks5h://localhost:1080", allProxy,
 		"ALL_PROXY should point to localhost:1080 inside sandbox")
+}
+
+func TestCommandContext_WithProxy_BridgeCleanedUpOnContextCancel(t *testing.T) {
+	if _, err := exec.LookPath("socat"); err != nil {
+		t.Skip("socat not available")
+	}
+
+	proxy, err := NewNetworkProxy(nil)
+	require.NoError(t, err)
+	defer proxy.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	policy := DefaultPolicy()
+	policy.NetworkProxy = proxy
+
+	cmd, err := policy.commandContext(ctx, "echo", "hello")
+	require.NoError(t, err)
+	_ = cmd // don't need to run it
+
+	// Find the bridge socket directory from the bwrap arguments.
+	// The cmd.Args contains --bind <socket-path> <socket-path> entries.
+	var socketDir string
+	for i, arg := range cmd.Args {
+		if arg == "--bind" && i+1 < len(cmd.Args) && strings.Contains(cmd.Args[i+1], "claude-bridge-") {
+			socketDir = filepath.Dir(cmd.Args[i+1])
+			break
+		}
+	}
+	require.NotEmpty(t, socketDir, "should find bridge socket directory in bwrap args")
+
+	// Verify socket directory exists before cancel
+	_, err = os.Stat(socketDir)
+	require.NoError(t, err, "bridge socket directory should exist before context cancel")
+
+	// Cancel the context, which should trigger bridge cleanup
+	cancel()
+
+	// Poll for cleanup (avoid flaky time.Sleep)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(socketDir)
+		return os.IsNotExist(err)
+	}, 2*time.Second, 10*time.Millisecond,
+		"bridge socket directory should be removed after context cancel")
 }
 
 func TestIntegration_NetworkBridge_CurlThroughProxy(t *testing.T) {
