@@ -8,6 +8,8 @@ import (
 	"github.com/bpowers/go-claudecode/sandbox"
 )
 
+const defaultMandatoryDenySearchDepth = 3
+
 // SandboxOptions configures optional features for the Claude Code sandbox.
 type SandboxOptions struct {
 	// VirtualEnvPath is the absolute path to a Python virtualenv to activate.
@@ -50,7 +52,13 @@ func NewClaudeCodeSandboxPolicy(workDir string, opts ...SandboxOptions) (*sandbo
 	policy.WorkDir = workDir
 	policy.AllowNetwork = true
 	policy.AllowAllReads = true // CLI needs to read system files, libraries, etc.
-	policy.DenyWritePaths = sandbox.DangerousWriteDenyPaths(workDir, false)
+
+	denyWritePaths := sandbox.DangerousWriteDenyPaths(workDir, false)
+	nestedDenyWritePaths, err := sandbox.ScanDangerousWriteDenyPaths(workDir, false, defaultMandatoryDenySearchDepth)
+	if err != nil {
+		return nil, fmt.Errorf("scan dangerous deny-write paths: %w", err)
+	}
+	policy.DenyWritePaths = appendUniquePaths(denyWritePaths, nestedDenyWritePaths...)
 
 	// Add Homebrew paths (macOS)
 	if sandbox.PathExists("/opt") {
@@ -159,4 +167,25 @@ func configureVirtualEnv(policy *sandbox.Policy, venvPath string) error {
 	policy.Env["PATH"] = binDir + ":" + os.Getenv("PATH")
 
 	return nil
+}
+
+func appendUniquePaths(paths []string, extra ...string) []string {
+	if len(extra) == 0 {
+		return paths
+	}
+
+	seen := make(map[string]struct{}, len(paths)+len(extra))
+	for _, p := range paths {
+		seen[p] = struct{}{}
+	}
+
+	for _, p := range extra {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+
+	return paths
 }

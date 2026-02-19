@@ -63,6 +63,23 @@ func TestNewClaudeCodeSandboxPolicy_DenyWritePaths(t *testing.T) {
 	assert.Contains(t, policy.DenyWritePaths, filepath.Join(workDir, ".vscode"))
 }
 
+func TestNewClaudeCodeSandboxPolicy_DenyWritePaths_IncludesNestedDangerousPaths(t *testing.T) {
+	workDir := t.TempDir()
+
+	nestedGitDir := filepath.Join(workDir, "subproject", ".git")
+	nestedHooks := filepath.Join(nestedGitDir, "hooks")
+	nestedConfig := filepath.Join(nestedGitDir, "config")
+
+	require.NoError(t, os.MkdirAll(nestedHooks, 0o755))
+	require.NoError(t, os.WriteFile(nestedConfig, []byte("[core]\n"), 0o644))
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir)
+	require.NoError(t, err)
+
+	assert.Contains(t, policy.DenyWritePaths, nestedHooks)
+	assert.Contains(t, policy.DenyWritePaths, nestedConfig)
+}
+
 func TestNewClaudeCodeSandboxPolicy_HomeDirMounts(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
