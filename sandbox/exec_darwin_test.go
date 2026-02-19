@@ -3,7 +3,9 @@
 package sandbox
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -266,6 +268,60 @@ func TestSeatbeltArgs_AllowLocalhostOnly(t *testing.T) {
 	// Should not use (remote ip ...) for outbound
 	assert.NotContains(t, policyStr, "remote ip",
 		"AllowLocalhostOnly should use (local ip) not (remote ip) for outbound")
+}
+
+func TestSeatbelt_NestedSandboxExecFails(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	tmpDir := t.TempDir()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowAllReads = true
+
+	// Try to run sandbox-exec inside an already-sandboxed process.
+	// macOS does not allow nested seatbelt sandboxing.
+	cmd, err := policy.Command(
+		context.Background(),
+		"/usr/bin/sandbox-exec", "-p", `(version 1)(allow default)`, "--", "/bin/echo", "hello",
+	)
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "nested sandbox-exec should fail, got output: %s", string(output))
+
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok, "expected *exec.ExitError, got %T: %v", err, err)
+	assert.Equal(t, 71, exitErr.ExitCode(), "nested sandbox-exec should fail with exit code 71 (sandbox_apply), output: %s", string(output))
+}
+
+func TestSeatbelt_DenyReadPathsBlocksSandboxExec(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	tmpDir := t.TempDir()
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.AllowAllReads = true
+	policy.DenyReadPaths = []string{"/usr/bin/sandbox-exec"}
+
+	// With sandbox-exec hidden via DenyReadPaths, the binary should not be accessible.
+	cmd, err := policy.Command(
+		context.Background(),
+		"/bin/test", "-x", "/usr/bin/sandbox-exec",
+	)
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "sandbox-exec should not be accessible when in DenyReadPaths, output: %s", string(output))
 }
 
 func TestAncestorDirectories(t *testing.T) {

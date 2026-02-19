@@ -29,6 +29,14 @@ type SandboxOptions struct {
 	// can then save images to session-display/ which will be accessible via
 	// the Display tool.
 	SessionDisplayDir string
+
+	// MplConfigDir is the absolute path to a matplotlib configuration directory.
+	// When set, the sandbox will:
+	//   - Mount this directory as read-write
+	//   - Set the MPLCONFIGDIR environment variable
+	// This prevents matplotlib from trying to write to ~/.matplotlib (which
+	// is not writable in the sandbox) and allows font cache persistence.
+	MplConfigDir string
 }
 
 // NewClaudeCodeSandboxPolicy creates an OS-level sandbox policy for running
@@ -144,6 +152,22 @@ func NewClaudeCodeSandboxPolicy(workDir string, opts ...SandboxOptions) (*sandbo
 		}
 	}
 
+	// Mount matplotlib config directory if specified
+	if options.MplConfigDir != "" {
+		if err := configureMplConfig(policy, options.MplConfigDir); err != nil {
+			return nil, fmt.Errorf("configure matplotlib config dir: %w", err)
+		}
+	}
+
+	if runtime.GOOS == "darwin" {
+		// Prevent the CLI's internal sandbox from attempting nested seatbelt
+		// sandboxing, which is not supported on macOS. Hiding sandbox-exec
+		// forces the CLI to fall back to running commands unsandboxed, which
+		// is safe because the OS-level seatbelt sandbox already provides
+		// comprehensive isolation.
+		policy.DenyReadPaths = append(policy.DenyReadPaths, "/usr/bin/sandbox-exec")
+	}
+
 	// Mount session display directory if specified
 	if options.SessionDisplayDir != "" {
 		displayTarget := filepath.Join(workDir, "session-display")
@@ -188,6 +212,33 @@ func configureVirtualEnv(policy *sandbox.Policy, venvPath string) error {
 	}
 	policy.Env["VIRTUAL_ENV"] = absVenvPath
 	policy.Env["PATH"] = binDir + ":" + os.Getenv("PATH")
+
+	return nil
+}
+
+// configureMplConfig sets up the sandbox policy so that matplotlib can write
+// its font cache and configuration to a writable directory instead of ~/.matplotlib.
+func configureMplConfig(policy *sandbox.Policy, mplConfigDir string) error {
+	absMplDir, err := filepath.Abs(mplConfigDir)
+	if err != nil {
+		return fmt.Errorf("get absolute path: %w", err)
+	}
+
+	if !sandbox.PathExists(absMplDir) {
+		if err := os.MkdirAll(absMplDir, 0o755); err != nil {
+			return fmt.Errorf("create mpl config dir: %w", err)
+		}
+	}
+
+	policy.ReadWriteMounts = append(policy.ReadWriteMounts, sandbox.Mount{
+		Source: absMplDir,
+		Target: absMplDir,
+	})
+
+	if policy.Env == nil {
+		policy.Env = make(map[string]string)
+	}
+	policy.Env["MPLCONFIGDIR"] = absMplDir
 
 	return nil
 }

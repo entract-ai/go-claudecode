@@ -274,3 +274,87 @@ func TestNewClaudeCodeSandboxPolicy_NoOptions(t *testing.T) {
 	// Env should be nil when no virtualenv is configured
 	assert.Nil(t, policy.Env, "policy.Env should be nil when no options specified")
 }
+
+func TestNewClaudeCodeSandboxPolicy_DenyNestedSandbox(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("nested seatbelt prevention is macOS-only")
+	}
+
+	workDir := t.TempDir()
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir)
+	require.NoError(t, err)
+
+	assert.Contains(t, policy.DenyReadPaths, "/usr/bin/sandbox-exec")
+}
+
+func TestNewClaudeCodeSandboxPolicy_WithMplConfigDir(t *testing.T) {
+	workDir := t.TempDir()
+	mplDir := filepath.Join(workDir, "mplconfig")
+	require.NoError(t, os.MkdirAll(mplDir, 0o755))
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir, SandboxOptions{
+		MplConfigDir: mplDir,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, policy)
+
+	hasMplMount := false
+	for _, m := range policy.ReadWriteMounts {
+		if m.Source == mplDir {
+			hasMplMount = true
+			break
+		}
+	}
+	assert.True(t, hasMplMount, "mpl config directory should be mounted read-write")
+
+	require.NotNil(t, policy.Env)
+	assert.Equal(t, mplDir, policy.Env["MPLCONFIGDIR"])
+}
+
+func TestNewClaudeCodeSandboxPolicy_MplConfigDirCreatedIfMissing(t *testing.T) {
+	workDir := t.TempDir()
+	mplDir := filepath.Join(workDir, "nonexistent", "mplconfig")
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir, SandboxOptions{
+		MplConfigDir: mplDir,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, policy)
+
+	info, err := os.Stat(mplDir)
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+
+	hasMplMount := false
+	for _, m := range policy.ReadWriteMounts {
+		if m.Source == mplDir {
+			hasMplMount = true
+			break
+		}
+	}
+	assert.True(t, hasMplMount, "mpl config directory should be mounted read-write")
+}
+
+func TestMplConfigDirInSandbox(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	workDir := t.TempDir()
+	mplDir := filepath.Join(workDir, "mplconfig")
+	require.NoError(t, os.MkdirAll(mplDir, 0o755))
+
+	policy, err := NewClaudeCodeSandboxPolicy(workDir, SandboxOptions{
+		MplConfigDir: mplDir,
+	})
+	require.NoError(t, err)
+
+	cmd, err := policy.Command(context.Background(), "/bin/bash", "-c",
+		"echo test-content > $MPLCONFIGDIR/fontlist.json && cat $MPLCONFIGDIR/fontlist.json")
+	require.NoError(t, err)
+
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "writing to MPLCONFIGDIR should succeed in sandbox, output: %s", string(output))
+	assert.Contains(t, string(output), "test-content")
+}
