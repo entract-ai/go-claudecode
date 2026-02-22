@@ -5,7 +5,7 @@ Native Go SDK for the Claude Code CLI, with built-in OS-level sandboxing.
 ## Project structure
 
 ```
-claudecode/     Main SDK -- talks to the Claude Code CLI via subprocess
+*.go            Main SDK (package claudecode) -- talks to the Claude Code CLI via subprocess
 chat/           Shared types: Tool, Message, Content, Role
 sandbox/        OS-level process sandboxing (Seatbelt on macOS, bwrap on Linux)
 mcp/            Standalone MCP server (JSON-RPC 2.0 over io.Reader/io.Writer)
@@ -17,7 +17,7 @@ third_party/    Git submodules (upstream references, not Go code)
 
 This project is a Go port of two Anthropic projects kept as git submodules:
 
-- `third_party/claude-agent-sdk-python/` -- Official Python SDK (MIT). The `claudecode/` package ports this.
+- `third_party/claude-agent-sdk-python/` -- Official Python SDK (MIT). The root `claudecode` package ports this.
 - `third_party/sandbox-runtime/` -- Official sandbox runtime in TypeScript (Apache 2.0). The `sandbox/` package ports this.
 
 **These submodules are reference material only.** No Go code imports or depends on them. When porting features, read the upstream code to understand intent, then write idiomatic Go.
@@ -38,7 +38,7 @@ When porting upstream changes:
 
 ## What we support
 
-### SDK (claudecode/)
+### SDK (root package)
 Everything in the Python claude-agent-sdk:
 - One-shot queries (Query, QuerySync)
 - Streaming with bidirectional control protocol (QueryWithInput)
@@ -82,7 +82,7 @@ This project requires a GOEXPERIMENT flag for the build. Use `./with_api_keys.sh
 ./with_api_keys.sh go test ./...
 
 # Run tests for a specific package
-./with_api_keys.sh go test ./claudecode/
+./with_api_keys.sh go test .
 ./with_api_keys.sh go test ./sandbox/
 ./with_api_keys.sh go test ./mcp/
 
@@ -94,7 +94,7 @@ This project requires a GOEXPERIMENT flag for the build. Use `./with_api_keys.sh
 
 - Follow standard Go conventions (gofmt, go vet, etc.)
 - Use testify's require/assert in tests
-- Functional options pattern for configuration (see `claudecode/options.go`)
+- Functional options pattern for configuration (see `options.go`)
 - Interfaces for extensibility (`chat.Tool`, `claudecode.Transport`, etc.)
 - Channels and iterators for streaming results
 - Keep the `sandbox/` package independent of `claudecode/` -- it is usable standalone

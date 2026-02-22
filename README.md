@@ -125,7 +125,7 @@ These features from the upstream reference implementations are intentionally exc
 ## Architecture
 
 ```
-claudecode/          SDK for interacting with Claude Code CLI
+*.go                 SDK (package claudecode) for interacting with Claude Code CLI
   subprocess.go      Spawns and manages the claude CLI process
   protocol.go        Bidirectional JSON control protocol
   mcp.go             Routes MCP messages to in-process tool servers
