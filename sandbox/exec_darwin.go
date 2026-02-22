@@ -176,8 +176,12 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		// Allow all file reads (sandbox-runtime model for CLI applications)
 		policyBuilder.WriteString("(allow file-read*)\n")
 	} else if len(readablePaths) > 0 {
-		// Restrict reads to explicitly mounted paths (maximum isolation for untrusted code)
+		// Restrict reads to explicitly mounted paths (maximum isolation for untrusted code).
+		// The root directory "/" must be readable for macOS process startup: dyld needs to
+		// stat "/" during path resolution. (subpath ...) rules cover directories and their
+		// contents but not "/" itself, so we add an explicit (literal "/") entry.
 		policyBuilder.WriteString("(allow file-read*\n")
+		policyBuilder.WriteString("  (literal \"/\")\n")
 		for i := range readablePaths {
 			policyBuilder.WriteString(fmt.Sprintf("  (subpath (param \"READABLE_ROOT_%d\"))\n", i))
 		}
