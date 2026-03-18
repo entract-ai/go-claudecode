@@ -230,8 +230,13 @@ func (t *SubprocessTransport) ReadMessages(ctx context.Context) <-chan MessageOr
 			copy(rawMsg, raw)
 			msg, err := parseMessage(rawMsg)
 			if err != nil {
-				// Parse errors are fatal - terminate the stream to match Python behavior.
-				// This helps detect protocol changes or corrupted output early.
+				// Unknown message types are non-fatal — Claude Code adds new
+				// streaming types (e.g., rate_limit_event) faster than SDKs
+				// update. Skip them and keep reading.
+				if errors.Is(err, ErrUnknownMessageType) {
+					continue
+				}
+				// Other parse errors are fatal.
 				ch <- MessageOrError{Err: fmt.Errorf("parse message: %w", err), Raw: rawMsg}
 				return
 			}
