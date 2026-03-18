@@ -1,7 +1,7 @@
 package claudecode
 
 import (
-	"encoding/json/jsontext"
+	"github.com/go-json-experiment/json/jsontext"
 	"io"
 	"strings"
 	"testing"
