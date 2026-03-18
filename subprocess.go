@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"encoding/json/jsontext"
+	"github.com/go-json-experiment/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
