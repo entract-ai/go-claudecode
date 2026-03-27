@@ -26,6 +26,11 @@ type NetworkFilter struct {
 	// DenyHosts contains patterns for denied destinations.
 	// Deny takes precedence over allow.
 	DenyHosts []string
+
+	// LogFunc is called for every connection attempt with the destination
+	// and whether it was allowed. Useful for auditing what a sandboxed
+	// process actually accesses. Called synchronously — keep it fast.
+	LogFunc func(host, port string, allowed bool)
 }
 
 // ValidateNetworkFilter checks that all patterns in a NetworkFilter are valid.
@@ -488,6 +493,14 @@ func (p *NetworkProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 // isAllowed checks if a connection to the given host and port is allowed by the filter.
 func (p *NetworkProxy) isAllowed(host, port string) bool {
+	allowed := p.isAllowedByRules(host, port)
+	if p.filter != nil && p.filter.LogFunc != nil {
+		p.filter.LogFunc(host, port, allowed)
+	}
+	return allowed
+}
+
+func (p *NetworkProxy) isAllowedByRules(host, port string) bool {
 	if p.filter == nil {
 		return true
 	}
