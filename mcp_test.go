@@ -456,3 +456,431 @@ func TestHandleSDKMCPRequest_ToolsCall_PassesThroughImageContent(t *testing.T) {
 	assert.Equal(t, "iVBOR...", content[1]["data"])
 	assert.Equal(t, "image/png", content[1]["mimeType"])
 }
+
+func TestHandleSDKMCPRequest_ToolsCall_ResourceLinkConvertedToText(t *testing.T) {
+	// resource_link content blocks should be converted to text containing
+	// name, URI, and description.
+	tool := &mockTool{
+		name:       "get_resource",
+		schemaJSON: `{"name": "get_resource", "description": "Returns a resource link", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{
+						"type": "resource_link",
+						"name": "My Document",
+						"uri": "https://example.com/doc.pdf",
+						"description": "A test document"
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_resource",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	text := content[0]["text"].(string)
+	assert.Contains(t, text, "My Document")
+	assert.Contains(t, text, "https://example.com/doc.pdf")
+	assert.Contains(t, text, "A test document")
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_ResourceLinkMinimalFields(t *testing.T) {
+	// resource_link with only a URI should produce a reasonable text block.
+	tool := &mockTool{
+		name:       "get_resource",
+		schemaJSON: `{"name": "get_resource", "description": "Returns a resource link", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{
+						"type": "resource_link",
+						"uri": "https://example.com/doc.pdf"
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_resource",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Contains(t, content[0]["text"], "https://example.com/doc.pdf")
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_ResourceLinkEmptyFallback(t *testing.T) {
+	// resource_link with no name, URI, or description falls back to "Resource link".
+	tool := &mockTool{
+		name:       "get_resource",
+		schemaJSON: `{"name": "get_resource", "description": "Returns a resource link", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{"type": "resource_link"}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_resource",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Equal(t, "Resource link", content[0]["text"])
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_EmbeddedResourceTextContent(t *testing.T) {
+	// resource blocks (EmbeddedResource) with text content should be
+	// converted to text blocks.
+	tool := &mockTool{
+		name:       "get_embedded",
+		schemaJSON: `{"name": "get_embedded", "description": "Returns an embedded resource", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{
+						"type": "resource",
+						"resource": {
+							"uri": "file:///test.txt",
+							"text": "File contents here",
+							"mimeType": "text/plain"
+						}
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_embedded",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Equal(t, "File contents here", content[0]["text"])
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_BinaryEmbeddedResourceSkipped(t *testing.T) {
+	// resource blocks with binary (blob) content should be skipped
+	// since they cannot be converted to text.
+	tool := &mockTool{
+		name:       "get_binary",
+		schemaJSON: `{"name": "get_binary", "description": "Returns a binary embedded resource", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{
+						"type": "resource",
+						"resource": {
+							"uri": "file:///image.png",
+							"blob": "iVBORw0KGgo=",
+							"mimeType": "image/png"
+						}
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_binary",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	// Binary resource should be skipped entirely
+	assert.Empty(t, content)
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_EmbeddedResourceMissingResource(t *testing.T) {
+	// resource blocks where the "resource" field is missing should be skipped.
+	tool := &mockTool{
+		name:       "get_empty",
+		schemaJSON: `{"name": "get_empty", "description": "Returns empty resource", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{"type": "resource"}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_empty",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	assert.Empty(t, content)
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_UnknownContentTypeSkipped(t *testing.T) {
+	// Unknown content types should be skipped instead of being passed through.
+	tool := &mockTool{
+		name:       "get_unknown",
+		schemaJSON: `{"name": "get_unknown", "description": "Returns unknown content type", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{"type": "custom_widget", "data": "some data"}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_unknown",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	// Unknown type should be skipped
+	assert.Empty(t, content)
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_MixedContentWithResourceLink(t *testing.T) {
+	// Mixed content with text, image, and resource_link should all be
+	// handled correctly.
+	tool := &mockTool{
+		name:       "get_mixed",
+		schemaJSON: `{"name": "get_mixed", "description": "Returns mixed content", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{"type": "text", "text": "Here is the document:"},
+					{"type": "image", "data": "iVBOR...", "mimeType": "image/png"},
+					{
+						"type": "resource_link",
+						"name": "Report",
+						"uri": "https://example.com/report"
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_mixed",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 3)
+
+	// Text block
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Equal(t, "Here is the document:", content[0]["text"])
+
+	// Image block
+	assert.Equal(t, "image", content[1]["type"])
+	assert.Equal(t, "iVBOR...", content[1]["data"])
+
+	// Resource link -> text block
+	assert.Equal(t, "text", content[2]["type"])
+	assert.Contains(t, content[2]["text"], "Report")
+	assert.Contains(t, content[2]["text"], "https://example.com/report")
+}
+
+func TestHandleSDKMCPRequest_ToolsCall_EmbeddedResourceEmptyText(t *testing.T) {
+	// resource blocks with empty-string text should still be converted
+	// (the Python fix uses "text" in resource, not resource.get("text")).
+	tool := &mockTool{
+		name:       "get_empty_text",
+		schemaJSON: `{"name": "get_empty_text", "description": "Returns embedded resource with empty text", "inputSchema": {"type": "object"}}`,
+		callHandler: func(ctx context.Context, args string) string {
+			return `{
+				"content": [
+					{
+						"type": "resource",
+						"resource": {
+							"uri": "file:///empty.txt",
+							"text": "",
+							"mimeType": "text/plain"
+						}
+					}
+				]
+			}`
+		},
+	}
+
+	config := &MCPSDKConfig{
+		Name:  "test-server",
+		Tools: []chat.Tool{tool},
+	}
+
+	message := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "get_empty_text",
+			"arguments": map[string]any{},
+		},
+	}
+
+	result := handleSDKMCPRequest(context.Background(), config, message)
+
+	require.NotNil(t, result["result"])
+	resultMap, ok := result["result"].(map[string]any)
+	require.True(t, ok)
+
+	content, ok := resultMap["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.Equal(t, "text", content[0]["type"])
+	assert.Equal(t, "", content[0]["text"])
+}
