@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -26,11 +27,22 @@ const (
 
 	// SDKVersion is the version of this SDK.
 	SDKVersion = "0.1.0"
+
+	// DefaultShutdownGracePeriod is how long Close waits for the subprocess
+	// to exit on its own after stdin is closed, before sending SIGTERM.
+	// The subprocess needs time to flush its session file after receiving
+	// EOF on stdin. Without this grace period, SIGTERM can interrupt the
+	// write and cause the last assistant message to be lost.
+	DefaultShutdownGracePeriod = 5 * time.Second
 )
 
 // SubprocessTransport implements Transport using the Claude Code CLI subprocess.
 type SubprocessTransport struct {
 	options *Options
+
+	// shutdownGracePeriod is how long Close waits for the process to exit
+	// on its own before sending SIGTERM. Zero means use DefaultShutdownGracePeriod.
+	shutdownGracePeriod time.Duration
 
 	mu            sync.Mutex
 	cmd           *exec.Cmd
@@ -278,6 +290,12 @@ func (t *SubprocessTransport) EndInput(ctx context.Context) error {
 }
 
 // Close closes the transport and releases resources.
+//
+// After closing stdin, the subprocess is given a grace period to exit on its
+// own (flushing session files, etc.). If it does not exit within the grace
+// period, SIGTERM is sent and we wait again. This avoids the previous behavior
+// of immediately killing the process, which could interrupt session file writes
+// and lose the last assistant message.
 func (t *SubprocessTransport) Close(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -288,7 +306,8 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 	t.closed = true
 	t.ready = false
 
-	// Close stdin if not already closed
+	// Close stdin if not already closed. This signals EOF to the subprocess,
+	// which should trigger its own graceful shutdown.
 	if !t.stdinClosed && t.stdin != nil {
 		t.stdin.Close()
 		t.stdinClosed = true
@@ -300,12 +319,30 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 	case <-time.After(time.Second):
 	}
 
-	// Kill process if still running, but only wait if not already waited
-	if t.cmd != nil && t.cmd.Process != nil {
-		t.cmd.Process.Kill()
-		if !t.waited {
+	// Wait for graceful shutdown, then terminate if needed.
+	if t.cmd != nil && t.cmd.Process != nil && !t.waited {
+		grace := t.shutdownGracePeriod
+		if grace == 0 {
+			grace = DefaultShutdownGracePeriod
+		}
+
+		// Wait for the process to exit on its own within the grace period.
+		// We run cmd.Wait() in a goroutine because it blocks, and select
+		// on either it completing or the timer expiring.
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- t.cmd.Wait()
+		}()
+
+		select {
+		case <-waitDone:
+			// Process exited on its own within the grace period.
 			t.waited = true
-			t.cmd.Wait() // Ignore error since we're closing anyway
+		case <-time.After(grace):
+			// Grace period expired -- send SIGTERM and wait for cleanup.
+			_ = t.cmd.Process.Signal(syscall.SIGTERM)
+			<-waitDone
+			t.waited = true
 		}
 	}
 

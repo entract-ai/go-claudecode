@@ -1,8 +1,12 @@
 package claudecode
 
 import (
+	"context"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -595,3 +599,149 @@ func indexOf(slice []string, item string) int {
 	}
 	return -1
 }
+
+// setupTransportWithProcess creates a SubprocessTransport with a real exec.Cmd
+// already started. This simulates the state after Connect() without needing
+// the full CLI version check / argument building.
+func setupTransportWithProcess(t *testing.T, cmd *exec.Cmd) *SubprocessTransport {
+	t.Helper()
+
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+
+	require.NoError(t, cmd.Start())
+
+	transport := &SubprocessTransport{
+		options:    applyOptions(),
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     stdout,
+		ready:      true,
+		stderrDone: make(chan struct{}),
+	}
+	// stderr not piped through callback, so mark done immediately
+	close(transport.stderrDone)
+	return transport
+}
+
+func TestSubprocessTransport_Close_GracefulExit(t *testing.T) {
+	// "cat" reads from stdin and exits when stdin is closed.
+	// With a generous grace period, the process should exit on its own
+	// and Close should NOT need to send any signal.
+	cmd := exec.Command("cat")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// The process should exit very quickly after stdin is closed
+	// (well under the 5s grace period).
+	assert.Less(t, elapsed, 2*time.Second,
+		"graceful exit should complete quickly, not wait the full grace period")
+
+	// Verify the process actually exited
+	assert.True(t, transport.waited || transport.cmd == nil)
+}
+
+func TestSubprocessTransport_Close_TimeoutSendsSIGTERM(t *testing.T) {
+	// "sleep 999" ignores stdin close and will hang indefinitely.
+	// With a short grace period, Close should time out and send SIGTERM.
+	cmd := exec.Command("sleep", "999")
+
+	transport := setupTransportWithProcess(t, cmd)
+	// Use a very short grace period so the test is fast
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+
+	pid := cmd.Process.Pid
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete in roughly the grace period (plus some slack for cleanup)
+	assert.Less(t, elapsed, 3*time.Second,
+		"should not hang much beyond the grace period")
+	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond,
+		"should have waited at least the grace period before signaling")
+
+	// Verify process is no longer running. Sending signal 0 to a dead
+	// process returns an error.
+	err = syscall.Kill(pid, 0)
+	assert.Error(t, err, "process should no longer be running after Close")
+}
+
+func TestSubprocessTransport_Close_AlreadyExited(t *testing.T) {
+	// "true" exits immediately with code 0. By the time Close runs,
+	// the process has already exited.
+	cmd := exec.Command("true")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	// Wait a moment for the "true" command to finish
+	time.Sleep(50 * time.Millisecond)
+
+	// Call cmd.Wait() to reap the process before Close, simulating the
+	// case where ReadMessages already reaped it.
+	_ = cmd.Wait()
+	transport.waited = true
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should be nearly instant -- no grace period wait for already-exited process
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"should not wait for an already-exited process")
+}
+
+func TestSubprocessTransport_Close_ProcessExitedButNotYetWaited(t *testing.T) {
+	// "true" exits immediately, but we do NOT call cmd.Wait() first.
+	// The process has exited at the OS level but Close hasn't reaped it yet.
+	// Close should detect this quickly via the grace period wait returning
+	// immediately (since the process is already dead).
+	cmd := exec.Command("true")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	// Wait a moment for "true" to actually exit
+	time.Sleep(50 * time.Millisecond)
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should be nearly instant because cmd.Wait() returns immediately
+	// for a process that has already exited
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"should detect already-exited process quickly via Wait()")
+}
+
+func TestDefaultShutdownGracePeriod(t *testing.T) {
+	// Verify the default grace period is 5 seconds as specified by upstream.
+	assert.Equal(t, 5*time.Second, DefaultShutdownGracePeriod)
+}
+
+func TestSubprocessTransport_Close_DefaultGracePeriod(t *testing.T) {
+	// Verify that a newly created transport uses the default grace period.
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+	assert.Equal(t, time.Duration(0), transport.shutdownGracePeriod,
+		"zero value means use default")
+}
+
