@@ -26,7 +26,7 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Contains(t, args, "stream-json")
 		assert.Contains(t, args, "--verbose")
 		assert.Contains(t, args, "--system-prompt")
-		assert.Contains(t, args, "--setting-sources")
+		assert.NotContains(t, args, "--setting-sources")
 	})
 
 	t.Run("with tools", func(t *testing.T) {
@@ -399,9 +399,16 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		args, err := transport.buildArgs()
 		require.NoError(t, err)
 
-		idx := indexOf(args, "--setting-sources")
-		assert.GreaterOrEqual(t, idx, 0)
-		assert.Equal(t, "", args[idx+1])
+		assert.NotContains(t, args, "--setting-sources")
+	})
+
+	t.Run("setting sources omitted when not provided", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--setting-sources")
 	})
 }
 

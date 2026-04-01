@@ -652,12 +652,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--settings", settingsValue)
 	}
 
-	// Setting sources
-	sources := ""
-	if t.options.settingSources != nil {
-		sources = strings.Join(t.options.settingSources, ",")
+	// Setting sources -- only emit when explicitly provided and non-empty
+	if len(t.options.settingSources) > 0 {
+		args = append(args, "--setting-sources", strings.Join(t.options.settingSources, ","))
 	}
-	args = append(args, "--setting-sources", sources)
 
 	// Add dirs
 	for _, dir := range t.options.addDirs {
