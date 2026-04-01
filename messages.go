@@ -26,6 +26,7 @@ type AssistantMessage struct {
 	Model           string                `json:"model"`
 	ParentToolUseID string                `json:"parent_tool_use_id,omitzero"`
 	Error           AssistantMessageError `json:"error,omitzero"`
+	Usage           map[string]any        `json:"usage,omitzero"`
 }
 
 func (AssistantMessage) messageMarker() {}
@@ -305,8 +306,9 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 		Message struct {
 			Content json.RawMessage `json:"content"`
 			Model   string          `json:"model"`
+			Usage   map[string]any  `json:"usage"`
 		} `json:"message"`
-		ParentToolUseID string `json:"parent_tool_use_id"`
+		ParentToolUseID string                `json:"parent_tool_use_id"`
 		Error           AssistantMessageError `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &holder); err != nil {
@@ -323,6 +325,7 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 		Model:           holder.Message.Model,
 		ParentToolUseID: holder.ParentToolUseID,
 		Error:           holder.Error,
+		Usage:           holder.Message.Usage,
 	}, nil
 }
 

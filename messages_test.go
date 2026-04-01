@@ -179,6 +179,59 @@ func TestParseAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestParseAssistantMessage_WithUsage(t *testing.T) {
+	// Per-turn usage is preserved on AssistantMessage.
+	// The CLI emits the API's full usage dict (including cache token
+	// breakdown) on every assistant message. This was previously dropped
+	// by the parser, forcing consumers to wait for the aggregate in
+	// ResultMessage.
+	input := `{
+		"type": "assistant",
+		"message": {
+			"content": [{"type": "text", "text": "hi"}],
+			"model": "claude-opus-4-5",
+			"usage": {
+				"input_tokens": 100,
+				"output_tokens": 50,
+				"cache_read_input_tokens": 2000,
+				"cache_creation_input_tokens": 500
+			}
+		}
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+
+	require.NotNil(t, assistantMsg.Usage, "usage should not be nil when present in message")
+	// JSON numbers unmarshal to float64 in map[string]any
+	assert.Equal(t, float64(100), assistantMsg.Usage["input_tokens"])
+	assert.Equal(t, float64(50), assistantMsg.Usage["output_tokens"])
+	assert.Equal(t, float64(2000), assistantMsg.Usage["cache_read_input_tokens"])
+	assert.Equal(t, float64(500), assistantMsg.Usage["cache_creation_input_tokens"])
+}
+
+func TestParseAssistantMessage_WithoutUsage(t *testing.T) {
+	// usage defaults to nil when absent (e.g. synthetic messages).
+	input := `{
+		"type": "assistant",
+		"message": {
+			"content": [{"type": "text", "text": "hi"}],
+			"model": "claude-opus-4-5"
+		}
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+
+	assert.Nil(t, assistantMsg.Usage, "usage should be nil when absent from message")
+}
+
 func TestParseAssistantMessage_ErrorFromTopLevel(t *testing.T) {
 	input := `{
 		"type": "assistant",
