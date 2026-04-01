@@ -175,6 +175,17 @@ func TestApplyOptions(t *testing.T) {
 		assert.Equal(t, "local", opts.plugins[0].Type)
 	})
 
+	t.Run("with task budget", func(t *testing.T) {
+		opts := applyOptions(WithTaskBudget(100000))
+		require.NotNil(t, opts.taskBudget)
+		assert.Equal(t, 100000, *opts.taskBudget)
+	})
+
+	t.Run("without task budget", func(t *testing.T) {
+		opts := applyOptions()
+		assert.Nil(t, opts.taskBudget)
+	})
+
 	t.Run("with misc options", func(t *testing.T) {
 		called := false
 		opts := applyOptions(

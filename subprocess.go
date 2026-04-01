@@ -567,6 +567,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--max-budget-usd", fmt.Sprintf("%f", t.options.maxBudgetUSD))
 	}
 
+	if t.options.taskBudget != nil {
+		args = append(args, "--task-budget", fmt.Sprintf("%d", *t.options.taskBudget))
+	}
+
 	// Resolve thinking tokens: WithThinking takes precedence over WithMaxThinkingTokens
 	var resolvedThinkingTokens *int
 	if t.options.thinking != nil {

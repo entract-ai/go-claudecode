@@ -348,6 +348,7 @@ type Options struct {
 	maxTurns          int
 	maxBudgetUSD      float64
 	maxThinkingTokens *int
+	taskBudget        *int // API-side task budget in tokens
 
 	// Model
 	model         string
@@ -550,6 +551,15 @@ func WithMaxBudgetUSD(budget float64) Option {
 func WithMaxThinkingTokens(tokens int) Option {
 	return func(o *Options) {
 		o.maxThinkingTokens = &tokens
+	}
+}
+
+// WithTaskBudget sets an API-side task budget in tokens. When set, the model
+// is made aware of its remaining token budget so it can pace tool use and wrap
+// up before the limit.
+func WithTaskBudget(total int) Option {
+	return func(o *Options) {
+		o.taskBudget = &total
 	}
 }
 

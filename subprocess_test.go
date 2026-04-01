@@ -167,6 +167,27 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Contains(t, args, "--max-thinking-tokens")
 	})
 
+	t.Run("with task budget", func(t *testing.T) {
+		opts := applyOptions(WithTaskBudget(100000))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--task-budget")
+		assert.GreaterOrEqual(t, idx, 0, "--task-budget should be present")
+		assert.Equal(t, "100000", args[idx+1])
+	})
+
+	t.Run("without task budget", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--task-budget",
+			"--task-budget should not be present when unset")
+	})
+
 	t.Run("with allowed and disallowed tools", func(t *testing.T) {
 		opts := applyOptions(
 			WithAllowedTools("mcp__calc__add"),
