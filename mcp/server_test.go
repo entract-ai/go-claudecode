@@ -635,6 +635,26 @@ func TestToolResultHasError(t *testing.T) {
 			input:    map[string]any{"error": false},
 			expected: true,
 		},
+		{
+			name:     "isError field true (camelCase)",
+			input:    map[string]any{"content": []any{}, "isError": true},
+			expected: true,
+		},
+		{
+			name:     "isError field false (camelCase)",
+			input:    map[string]any{"content": []any{}, "isError": false},
+			expected: false,
+		},
+		{
+			name:     "is_error field true (snake_case)",
+			input:    map[string]any{"content": []any{}, "is_error": true},
+			expected: true,
+		},
+		{
+			name:     "is_error field false (snake_case)",
+			input:    map[string]any{"content": []any{}, "is_error": false},
+			expected: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -643,6 +663,82 @@ func TestToolResultHasError(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestServerCallToolIsErrorFlagPropagated(t *testing.T) {
+	// Verify that is_error: true in tool output is propagated to CallToolResult.IsError.
+	// This is the Go equivalent of the Python SDK fix in commit 582cdf7.
+	t.Run("is_error true in tool output", func(t *testing.T) {
+		registry := NewRegistry()
+		tool := &stubTool{
+			name:        "divide",
+			description: "divide two numbers",
+			schema:      `{"name":"divide","description":"divide two numbers","inputSchema":{"type":"object"}}`,
+			result:      `{"content": [{"type": "text", "text": "Division by zero"}], "is_error": true}`,
+		}
+		require.NoError(t, registry.Register(tool))
+
+		server, err := NewServer(registry, Implementation{Name: "test", Version: "1.0"})
+		require.NoError(t, err)
+
+		req := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"divide","arguments":{}}}`)
+		resp, err := server.handleRaw(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Nil(t, resp.Error)
+
+		result, ok := resp.Result.(CallToolResult)
+		require.True(t, ok)
+		assert.True(t, result.IsError, "is_error: true from tool output should propagate to CallToolResult.IsError")
+	})
+
+	t.Run("isError true in tool output (camelCase)", func(t *testing.T) {
+		registry := NewRegistry()
+		tool := &stubTool{
+			name:        "divide",
+			description: "divide two numbers",
+			schema:      `{"name":"divide","description":"divide two numbers","inputSchema":{"type":"object"}}`,
+			result:      `{"content": [{"type": "text", "text": "Division by zero"}], "isError": true}`,
+		}
+		require.NoError(t, registry.Register(tool))
+
+		server, err := NewServer(registry, Implementation{Name: "test", Version: "1.0"})
+		require.NoError(t, err)
+
+		req := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"divide","arguments":{}}}`)
+		resp, err := server.handleRaw(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Nil(t, resp.Error)
+
+		result, ok := resp.Result.(CallToolResult)
+		require.True(t, ok)
+		assert.True(t, result.IsError, "isError: true from tool output should propagate to CallToolResult.IsError")
+	})
+
+	t.Run("success case defaults to false", func(t *testing.T) {
+		registry := NewRegistry()
+		tool := &stubTool{
+			name:        "divide",
+			description: "divide two numbers",
+			schema:      `{"name":"divide","description":"divide two numbers","inputSchema":{"type":"object"}}`,
+			result:      `{"content": [{"type": "text", "text": "2.0"}]}`,
+		}
+		require.NoError(t, registry.Register(tool))
+
+		server, err := NewServer(registry, Implementation{Name: "test", Version: "1.0"})
+		require.NoError(t, err)
+
+		req := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"divide","arguments":{}}}`)
+		resp, err := server.handleRaw(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Nil(t, resp.Error)
+
+		result, ok := resp.Result.(CallToolResult)
+		require.True(t, ok)
+		assert.False(t, result.IsError, "successful tool output should have IsError=false")
+	})
 }
 
 func TestServerInvalidJsonRequest(t *testing.T) {

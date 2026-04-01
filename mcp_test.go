@@ -295,6 +295,123 @@ func TestHandleSDKMCPRequest_ToolsList_IncludesAnnotations(t *testing.T) {
 	assert.Equal(t, true, annotations["readOnlyHint"])
 }
 
+func TestHandleSDKMCPRequest_ToolsCall_IsErrorFromStructuredContent(t *testing.T) {
+	// Verify that is_error from structured tool output with content blocks
+	// is propagated to the MCP result. This is the exact pattern from the
+	// Python SDK fix in commit 582cdf7.
+	t.Run("is_error true with content blocks", func(t *testing.T) {
+		tool := &mockTool{
+			name:       "divide",
+			schemaJSON: `{"name": "divide", "description": "Divide two numbers", "inputSchema": {"type": "object"}}`,
+			callHandler: func(ctx context.Context, args string) string {
+				return `{"content": [{"type": "text", "text": "Division by zero"}], "is_error": true}`
+			},
+		}
+
+		config := &MCPSDKConfig{
+			Name:  "test-server",
+			Tools: []chat.Tool{tool},
+		}
+
+		message := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "divide",
+				"arguments": map[string]any{},
+			},
+		}
+
+		result := handleSDKMCPRequest(context.Background(), config, message)
+
+		require.NotNil(t, result["result"])
+		resultMap, ok := result["result"].(map[string]any)
+		require.True(t, ok)
+
+		// isError should be propagated
+		isError, hasIsError := resultMap["isError"]
+		assert.True(t, hasIsError, "isError should be present in result")
+		assert.True(t, isError.(bool), "isError should be true")
+
+		// Content should be parsed from the structured output
+		content, ok := resultMap["content"].([]map[string]any)
+		require.True(t, ok)
+		require.Len(t, content, 1)
+		assert.Equal(t, "Division by zero", content[0]["text"])
+	})
+
+	t.Run("isError true with content blocks (camelCase)", func(t *testing.T) {
+		tool := &mockTool{
+			name:       "divide",
+			schemaJSON: `{"name": "divide", "description": "Divide two numbers", "inputSchema": {"type": "object"}}`,
+			callHandler: func(ctx context.Context, args string) string {
+				return `{"content": [{"type": "text", "text": "Division by zero"}], "isError": true}`
+			},
+		}
+
+		config := &MCPSDKConfig{
+			Name:  "test-server",
+			Tools: []chat.Tool{tool},
+		}
+
+		message := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "divide",
+				"arguments": map[string]any{},
+			},
+		}
+
+		result := handleSDKMCPRequest(context.Background(), config, message)
+
+		require.NotNil(t, result["result"])
+		resultMap, ok := result["result"].(map[string]any)
+		require.True(t, ok)
+
+		isError, hasIsError := resultMap["isError"]
+		assert.True(t, hasIsError, "isError should be present in result")
+		assert.True(t, isError.(bool), "isError should be true")
+	})
+
+	t.Run("success case omits isError", func(t *testing.T) {
+		tool := &mockTool{
+			name:       "divide",
+			schemaJSON: `{"name": "divide", "description": "Divide two numbers", "inputSchema": {"type": "object"}}`,
+			callHandler: func(ctx context.Context, args string) string {
+				return `{"content": [{"type": "text", "text": "2.0"}]}`
+			},
+		}
+
+		config := &MCPSDKConfig{
+			Name:  "test-server",
+			Tools: []chat.Tool{tool},
+		}
+
+		message := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "divide",
+				"arguments": map[string]any{},
+			},
+		}
+
+		result := handleSDKMCPRequest(context.Background(), config, message)
+
+		require.NotNil(t, result["result"])
+		resultMap, ok := result["result"].(map[string]any)
+		require.True(t, ok)
+
+		// isError should not be present for successful results
+		_, hasIsError := resultMap["isError"]
+		assert.False(t, hasIsError, "isError should not be present for successful results")
+	})
+}
+
 func TestHandleSDKMCPRequest_ToolsCall_PassesThroughImageContent(t *testing.T) {
 	tool := &mockTool{
 		name:       "image_tool",
