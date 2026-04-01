@@ -12,6 +12,12 @@ import (
 // Query performs a one-shot query with a string prompt.
 // Internally delegates to QueryWithInput using the streaming control protocol,
 // which means hooks, SDK MCP servers, and canUseTool callbacks are all supported.
+//
+// Because this delegates to QueryWithInput, both string prompts and streaming
+// prompts share the same stdin lifecycle: when SDK MCP servers or hooks are
+// configured, stdin stays open until the first result arrives. This avoids
+// a bug class where closing stdin too early prevents MCP server initialization.
+// See upstream Python SDK commit 6119fd4 for the equivalent fix.
 func Query(ctx context.Context, prompt string, opts ...Option) <-chan MessageOrError {
 	ch := make(chan MessageOrError, 100)
 
