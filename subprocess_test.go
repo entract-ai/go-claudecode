@@ -3,7 +3,9 @@ package claudecode
 import (
 	"context"
 	"encoding/json/jsontext"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -832,5 +834,71 @@ func TestSubprocessTransport_Close_DefaultGracePeriod(t *testing.T) {
 	transport := NewSubprocessTransport(opts)
 	assert.Equal(t, time.Duration(0), transport.shutdownGracePeriod,
 		"zero value means use default")
+}
+
+// writeFakeCLI creates a shell script in dir that prints the given version string
+// when invoked with "-v". Returns the full path to the script.
+func writeFakeCLI(t *testing.T, dir, versionOutput string) string {
+	t.Helper()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\necho '" + versionOutput + "'\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
+}
+
+func TestCheckVersion_ErrorIncludesCLIPath(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "1.0.0 (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	require.Error(t, err, "version below minimum should return an error")
+	assert.Contains(t, err.Error(), "1.0.0", "error should include the detected version")
+	assert.Contains(t, err.Error(), MinimumCLIVersion, "error should include the minimum version")
+	assert.Contains(t, err.Error(), cliPath, "error should include the CLI path")
+}
+
+func TestCheckVersion_NoErrorForCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "99.99.99 (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "version at or above minimum should not return an error")
+}
+
+func TestCheckVersion_NoErrorForExactMinimumVersion(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, MinimumCLIVersion+" (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "version equal to minimum should not return an error")
+}
+
+func TestCheckVersion_SilentOnUnparseableOutput(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "not a version string")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "unparseable version output should be silently ignored")
+}
+
+func TestCheckVersion_SilentOnExecutionFailure(t *testing.T) {
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	// Use a non-existent path to trigger execution failure
+	err := transport.checkVersion(context.Background(), "/nonexistent/path/to/claude")
+	assert.NoError(t, err, "execution failure should be silently ignored")
 }
 

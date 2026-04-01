@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,7 +146,7 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	if os.Getenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK") == "" {
 		if err := t.checkVersion(ctx, cliPath); err != nil {
 			// Log warning but don't fail
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			slog.Warn("CLI version check", "error", err)
 		}
 	}
 
@@ -469,7 +470,7 @@ func (t *SubprocessTransport) checkVersion(ctx context.Context, cliPath string) 
 
 	version := match[1]
 	if compareVersions(version, MinimumCLIVersion) < 0 {
-		return fmt.Errorf("claude code version %s is below minimum required version %s", version, MinimumCLIVersion)
+		return fmt.Errorf("claude code version %s at %s is below minimum required version %s", version, cliPath, MinimumCLIVersion)
 	}
 
 	return nil
