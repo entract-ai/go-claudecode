@@ -609,6 +609,43 @@ func TestSubprocessTransport_buildEnv(t *testing.T) {
 
 		assert.Equal(t, "true", m["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"])
 	})
+
+	t.Run("CLAUDECODE env var is filtered from base env", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin", "CLAUDECODE=1", "HOME=/home/test"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.NotContains(t, m, "CLAUDECODE",
+			"CLAUDECODE must be filtered from the inherited environment")
+		assert.Equal(t, "/usr/bin", m["PATH"],
+			"other env vars must be preserved")
+		assert.Equal(t, "/home/test", m["HOME"],
+			"other env vars must be preserved")
+	})
+
+	t.Run("CLAUDECODE can be set via options env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDECODE", "1"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "1", m["CLAUDECODE"],
+			"explicit CLAUDECODE via options.env should be respected")
+	})
+
+	t.Run("CLAUDECODE in base env is filtered but options env overrides", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDECODE", "custom"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin", "CLAUDECODE=1"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "custom", m["CLAUDECODE"],
+			"options.env CLAUDECODE should take effect even when base env had CLAUDECODE=1")
+	})
 }
 
 func indexOf(slice []string, item string) int {

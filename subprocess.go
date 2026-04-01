@@ -831,7 +831,17 @@ func compareVersions(a, b string) int {
 //  4. User-provided env vars (options.env)
 //  5. CLAUDE_AGENT_SDK_VERSION -- always SDK-controlled, cannot be overridden
 func (t *SubprocessTransport) buildEnv(baseEnv []string) []string {
-	env := append(baseEnv[:0:0], baseEnv...) // copy to avoid mutating caller's slice
+	// Filter out CLAUDECODE from the inherited environment so SDK-spawned
+	// subprocesses don't think they're running inside a Claude Code parent.
+	// Users who need it can still set it explicitly via options.env.
+	// See upstream Python SDK commit 5839ff9.
+	env := make([]string, 0, len(baseEnv))
+	for _, entry := range baseEnv {
+		if k, _, ok := strings.Cut(entry, "="); ok && k == "CLAUDECODE" {
+			continue
+		}
+		env = append(env, entry)
+	}
 
 	// CLAUDE_CODE_ENTRYPOINT acts as a default: set before user env
 	// so options.env can override it.
