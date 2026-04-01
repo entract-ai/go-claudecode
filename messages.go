@@ -27,6 +27,10 @@ type AssistantMessage struct {
 	ParentToolUseID string                `json:"parent_tool_use_id,omitzero"`
 	Error           AssistantMessageError `json:"error,omitzero"`
 	Usage           map[string]any        `json:"usage,omitzero"`
+	MessageID       *string               `json:"message_id,omitzero"`
+	StopReason      *string               `json:"stop_reason,omitzero"`
+	SessionID       *string               `json:"session_id,omitzero"`
+	UUID            *string               `json:"uuid,omitzero"`
 }
 
 func (AssistantMessage) messageMarker() {}
@@ -118,17 +122,20 @@ func (TaskNotificationMessage) messageMarker() {}
 
 // ResultMessage represents the final result of a conversation.
 type ResultMessage struct {
-	Subtype          string      `json:"subtype"`
-	DurationMS       int         `json:"duration_ms"`
-	DurationAPIMS    int         `json:"duration_api_ms"`
-	IsError          bool        `json:"is_error"`
-	NumTurns         int         `json:"num_turns"`
-	SessionID        string      `json:"session_id"`
-	StopReason       *string     `json:"stop_reason,omitzero"`
-	TotalCostUSD     *float64    `json:"total_cost_usd,omitzero"`
-	Usage            *UsageStats `json:"usage,omitzero"`
-	Result           string      `json:"result,omitzero"`
-	StructuredOutput any         `json:"structured_output,omitzero"`
+	Subtype           string         `json:"subtype"`
+	DurationMS        int            `json:"duration_ms"`
+	DurationAPIMS     int            `json:"duration_api_ms"`
+	IsError           bool           `json:"is_error"`
+	NumTurns          int            `json:"num_turns"`
+	SessionID         string         `json:"session_id"`
+	StopReason        *string        `json:"stop_reason,omitzero"`
+	TotalCostUSD      *float64       `json:"total_cost_usd,omitzero"`
+	Usage             *UsageStats    `json:"usage,omitzero"`
+	Result            string         `json:"result,omitzero"`
+	StructuredOutput  any            `json:"structured_output,omitzero"`
+	ModelUsage        map[string]any `json:"modelUsage,omitzero"`
+	PermissionDenials []any          `json:"permission_denials,omitzero"`
+	UUID              *string        `json:"uuid,omitzero"`
 }
 
 func (ResultMessage) messageMarker() {}
@@ -304,12 +311,16 @@ func parseUserMessage(raw json.RawMessage) (*UserMessage, error) {
 func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 	var holder struct {
 		Message struct {
-			Content json.RawMessage `json:"content"`
-			Model   string          `json:"model"`
-			Usage   map[string]any  `json:"usage"`
+			Content    json.RawMessage `json:"content"`
+			Model      string          `json:"model"`
+			Usage      map[string]any  `json:"usage"`
+			ID         *string         `json:"id"`
+			StopReason *string         `json:"stop_reason"`
 		} `json:"message"`
 		ParentToolUseID string                `json:"parent_tool_use_id"`
 		Error           AssistantMessageError `json:"error"`
+		SessionID       *string               `json:"session_id"`
+		UUID            *string               `json:"uuid"`
 	}
 	if err := json.Unmarshal(raw, &holder); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse assistant message: %v", err)}
@@ -326,6 +337,10 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 		ParentToolUseID: holder.ParentToolUseID,
 		Error:           holder.Error,
 		Usage:           holder.Message.Usage,
+		MessageID:       holder.Message.ID,
+		StopReason:      holder.Message.StopReason,
+		SessionID:       holder.SessionID,
+		UUID:            holder.UUID,
 	}, nil
 }
 

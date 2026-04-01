@@ -859,3 +859,131 @@ func TestAssistantMessage_GetToolCalls(t *testing.T) {
 	assert.Equal(t, "tool_2", calls[1].ID)
 	assert.Equal(t, "Read", calls[1].Name)
 }
+
+func TestParseAssistantMessage_WithAllNewFields(t *testing.T) {
+	// AssistantMessage preserves message_id, stop_reason (from nested message),
+	// and session_id, uuid (from top level).
+	input := `{
+		"type": "assistant",
+		"message": {
+			"content": [{"type": "text", "text": "Hello"}],
+			"model": "claude-sonnet-4-5-20250929",
+			"id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		},
+		"session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+		"uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+
+	require.NotNil(t, assistantMsg.MessageID)
+	assert.Equal(t, "msg_01HRq7YZE3apPqSHydvG77Ve", *assistantMsg.MessageID)
+	require.NotNil(t, assistantMsg.StopReason)
+	assert.Equal(t, "end_turn", *assistantMsg.StopReason)
+	require.NotNil(t, assistantMsg.SessionID)
+	assert.Equal(t, "fdf2d90a-fd9e-4736-ae35-806edd13643f", *assistantMsg.SessionID)
+	require.NotNil(t, assistantMsg.UUID)
+	assert.Equal(t, "0dbd2453-1209-4fe9-bd51-4102f64e33df", *assistantMsg.UUID)
+	require.NotNil(t, assistantMsg.Usage)
+	assert.Equal(t, float64(10), assistantMsg.Usage["input_tokens"])
+	assert.Equal(t, float64(5), assistantMsg.Usage["output_tokens"])
+}
+
+func TestParseAssistantMessage_NewOptionalFieldsAbsent(t *testing.T) {
+	// New optional fields default to nil when absent from the JSON.
+	input := `{
+		"type": "assistant",
+		"message": {
+			"content": [{"type": "text", "text": "hi"}],
+			"model": "claude-opus-4-5"
+		}
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+
+	assert.Nil(t, assistantMsg.MessageID)
+	assert.Nil(t, assistantMsg.StopReason)
+	assert.Nil(t, assistantMsg.SessionID)
+	assert.Nil(t, assistantMsg.UUID)
+}
+
+func TestParseResultMessage_WithModelUsage(t *testing.T) {
+	// ResultMessage preserves modelUsage, permission_denials, and uuid.
+	input := `{
+		"type": "result",
+		"subtype": "success",
+		"duration_ms": 3000,
+		"duration_api_ms": 2000,
+		"is_error": false,
+		"num_turns": 1,
+		"session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+		"stop_reason": "end_turn",
+		"total_cost_usd": 0.0106,
+		"usage": {"input_tokens": 3, "output_tokens": 24},
+		"result": "Hello",
+		"modelUsage": {
+			"claude-sonnet-4-5-20250929": {
+				"inputTokens": 3,
+				"outputTokens": 24,
+				"cacheReadInputTokens": 20012,
+				"costUSD": 0.0106,
+				"contextWindow": 200000,
+				"maxOutputTokens": 64000
+			}
+		},
+		"permission_denials": [],
+		"uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	require.NotNil(t, resultMsg.ModelUsage)
+	modelEntry, ok := resultMsg.ModelUsage["claude-sonnet-4-5-20250929"]
+	require.True(t, ok, "expected model key in ModelUsage")
+	modelMap, ok := modelEntry.(map[string]any)
+	require.True(t, ok, "expected model entry to be map[string]any")
+	assert.Equal(t, 0.0106, modelMap["costUSD"])
+
+	require.NotNil(t, resultMsg.PermissionDenials)
+	assert.Empty(t, resultMsg.PermissionDenials)
+
+	require.NotNil(t, resultMsg.UUID)
+	assert.Equal(t, "d379c496-f33a-4ea4-b920-3c5483baa6f7", *resultMsg.UUID)
+}
+
+func TestParseResultMessage_NewOptionalFieldsAbsent(t *testing.T) {
+	// New optional fields default to nil when absent from the JSON.
+	input := `{
+		"type": "result",
+		"subtype": "success",
+		"duration_ms": 1000,
+		"duration_api_ms": 500,
+		"is_error": false,
+		"num_turns": 1,
+		"session_id": "session_123"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	assert.Nil(t, resultMsg.ModelUsage)
+	assert.Nil(t, resultMsg.PermissionDenials)
+	assert.Nil(t, resultMsg.UUID)
+}
