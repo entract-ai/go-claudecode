@@ -985,5 +985,65 @@ func TestParseResultMessage_NewOptionalFieldsAbsent(t *testing.T) {
 
 	assert.Nil(t, resultMsg.ModelUsage)
 	assert.Nil(t, resultMsg.PermissionDenials)
+	assert.Nil(t, resultMsg.Errors)
 	assert.Nil(t, resultMsg.UUID)
+}
+
+func TestParseResultMessage_WithErrors(t *testing.T) {
+	// The CLI emits errors: string[] on error result messages (subtypes like
+	// error_during_execution, error_max_turns, etc.). Without this field,
+	// SDK users cannot diagnose why a non-zero exit occurred.
+	input := `{
+		"type": "result",
+		"subtype": "error_during_execution",
+		"duration_ms": 5000,
+		"duration_api_ms": 3000,
+		"is_error": true,
+		"num_turns": 3,
+		"session_id": "session_456",
+		"errors": [
+			"Tool execution failed: permission denied",
+			"Unable to write to /etc/hosts"
+		],
+		"uuid": "err-uuid-789"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	require.NotNil(t, resultMsg.Errors)
+	assert.Equal(t, []string{
+		"Tool execution failed: permission denied",
+		"Unable to write to /etc/hosts",
+	}, resultMsg.Errors)
+	assert.True(t, resultMsg.IsError)
+	assert.Equal(t, "error_during_execution", resultMsg.Subtype)
+	require.NotNil(t, resultMsg.UUID)
+	assert.Equal(t, "err-uuid-789", *resultMsg.UUID)
+}
+
+func TestParseResultMessage_SuccessNoErrors(t *testing.T) {
+	// A successful result message has no errors field.
+	input := `{
+		"type": "result",
+		"subtype": "success",
+		"duration_ms": 1000,
+		"duration_api_ms": 500,
+		"is_error": false,
+		"num_turns": 1,
+		"session_id": "session_789",
+		"result": "Task completed successfully"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	assert.Nil(t, resultMsg.Errors)
+	assert.Equal(t, "Task completed successfully", resultMsg.Result)
 }

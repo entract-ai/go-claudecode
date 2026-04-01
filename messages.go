@@ -135,6 +135,7 @@ type ResultMessage struct {
 	StructuredOutput  any            `json:"structured_output,omitzero"`
 	ModelUsage        map[string]any `json:"modelUsage,omitzero"`
 	PermissionDenials []any          `json:"permission_denials,omitzero"`
+	Errors            []string       `json:"errors,omitzero"`
 	UUID              *string        `json:"uuid,omitzero"`
 }
 
