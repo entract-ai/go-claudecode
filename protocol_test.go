@@ -272,6 +272,71 @@ func (w *writeCapturingTransport) EndInput(ctx context.Context) error           
 func (w *writeCapturingTransport) Close(ctx context.Context) error                        { return nil }
 func (w *writeCapturingTransport) IsReady() bool                                          { return true }
 
+func TestInitialize_HonorsEnvTimeout(t *testing.T) {
+	// Verify that Initialize() reads CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and uses
+	// it as the initialize timeout. This is the Go equivalent of the Python SDK
+	// fix in commit 76cb292: both Query()/QueryWithInput() and Client.Connect()
+	// call ControlRouter.Initialize(), which reads the env var. The Go SDK never
+	// had the Python bug (separate code paths with one forgetting the env var),
+	// but this test guards against regressions.
+
+	t.Run("custom timeout from env var", func(t *testing.T) {
+		// Set a short timeout (100ms) via the env var. Initialize() should
+		// time out in roughly 100ms since the transport never responds.
+		t.Setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "100")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		start := time.Now()
+		_, err := router.Initialize(context.Background())
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTimeout)
+
+		// Should have timed out in ~100ms, not the default 60s.
+		// Use a generous upper bound to avoid flakiness, but ensure it
+		// did not wait anywhere close to the default 60s.
+		assert.Less(t, elapsed, 5*time.Second,
+			"should time out near 100ms, not the default 60s")
+	})
+
+	t.Run("default timeout when env var unset", func(t *testing.T) {
+		// When the env var is unset, Initialize() should use DefaultInitializeTimeout (60s).
+		// We cannot wait 60s in a unit test, so instead we use context cancellation
+		// to verify that the initialize attempt starts (proving it did not time out
+		// at 0 or some other wrong value).
+		os.Unsetenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := router.Initialize(ctx)
+		require.Error(t, err)
+		// Should be a context deadline exceeded, not ErrTimeout (because the
+		// default 60s timeout is much longer than our 50ms context deadline).
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("invalid env var returns error", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "not-a-number")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		_, err := router.Initialize(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse duration")
+	})
+}
+
 func TestBuildHooksConfig(t *testing.T) {
 	// Suppress unused variable warning for context import
 	_ = context.Background()
