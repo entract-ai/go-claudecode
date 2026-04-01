@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -642,6 +643,77 @@ func setupTransportWithProcess(t *testing.T, cmd *exec.Cmd) *SubprocessTransport
 	// stderr not piped through callback, so mark done immediately
 	close(transport.stderrDone)
 	return transport
+}
+
+// setupTransportWithReader creates a SubprocessTransport with a real exec.Cmd
+// and a messageReader (jsontext.Decoder). Unlike setupTransportWithProcess, this
+// also wires up the JSON decoder so ReadMessages can be tested end-to-end.
+func setupTransportWithReader(t *testing.T, cmd *exec.Cmd) *SubprocessTransport {
+	t.Helper()
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.messageReader = jsontext.NewDecoder(newJSONLineFilterReader(transport.stdout))
+	return transport
+}
+
+func TestSubprocessTransport_ReadMessages_SkipsNonJSONLines(t *testing.T) {
+	// Simulate the bug from upstream Python commit c290bbf:
+	// when DEBUG is set, the CLI emits [SandboxDebug] lines to stdout
+	// before any JSON messages. Without filtering, these corrupt the
+	// JSON parser and cause zero messages to be parsed.
+	script := `printf '[SandboxDebug] Seccomp filtering not available\n'
+printf '{"type":"system","subtype":"init"}\n'
+printf '[SandboxDebug] another debug line\n'
+printf 'WARNING: something unexpected\n'
+printf '{"type":"result","subtype":"success","session_id":"s1","duration_ms":0,"duration_api_ms":0,"is_error":false,"num_turns":0}\n'
+`
+	cmd := exec.Command("sh", "-c", script)
+	transport := setupTransportWithReader(t, cmd)
+	defer transport.Close(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var messages []Message
+	for msg := range transport.ReadMessages(ctx) {
+		if msg.Err != nil {
+			t.Fatalf("unexpected error: %v", msg.Err)
+		}
+		messages = append(messages, msg.Message)
+	}
+
+	require.Len(t, messages, 2, "should parse exactly 2 JSON messages, skipping debug lines")
+
+	sys, ok := messages[0].(*SystemMessage)
+	require.True(t, ok)
+	assert.Equal(t, "init", sys.Subtype)
+
+	result, ok := messages[1].(*ResultMessage)
+	require.True(t, ok)
+	assert.Equal(t, "success", result.Subtype)
+}
+
+func TestSubprocessTransport_ReadMessages_AllJSON(t *testing.T) {
+	// When there are no non-JSON lines, all messages should parse normally.
+	script := `printf '{"type":"system","subtype":"init"}\n'
+printf '{"type":"result","subtype":"success","session_id":"s1","duration_ms":0,"duration_api_ms":0,"is_error":false,"num_turns":0}\n'
+`
+	cmd := exec.Command("sh", "-c", script)
+	transport := setupTransportWithReader(t, cmd)
+	defer transport.Close(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var messages []Message
+	for msg := range transport.ReadMessages(ctx) {
+		if msg.Err != nil {
+			t.Fatalf("unexpected error: %v", msg.Err)
+		}
+		messages = append(messages, msg.Message)
+	}
+
+	require.Len(t, messages, 2)
 }
 
 func TestSubprocessTransport_Close_GracefulExit(t *testing.T) {

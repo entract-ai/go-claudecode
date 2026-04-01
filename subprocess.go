@@ -66,6 +66,70 @@ func NewSubprocessTransport(opts *Options) *SubprocessTransport {
 	}
 }
 
+// jsonLineFilterReader wraps an io.Reader and skips non-JSON lines.
+//
+// The Claude Code CLI may emit non-JSON diagnostic lines to stdout
+// (e.g. "[SandboxDebug] ..." when the DEBUG env var is set). These
+// corrupt jsontext.Decoder's parse state, causing it to return an error
+// instead of the valid JSON objects that follow.
+//
+// This reader reads the underlying stream line by line and drops any
+// line that does not start with '{'. Empty lines and whitespace-only
+// lines are passed through (jsontext.Decoder handles whitespace natively).
+//
+// See upstream Python SDK commit c290bbf for the equivalent fix.
+type jsonLineFilterReader struct {
+	scanner *bufio.Scanner
+	buf     []byte // unread portion of the current line
+}
+
+// newJSONLineFilterReader wraps r so that non-JSON lines are silently
+// dropped before reaching the JSON decoder.
+func newJSONLineFilterReader(r io.Reader) *jsonLineFilterReader {
+	s := bufio.NewScanner(r)
+	// Increase buffer size to handle large JSON lines (e.g., assistant
+	// responses that routinely exceed the default 64KB limit).
+	// Matches the pattern used in ParseTranscript.
+	s.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	return &jsonLineFilterReader{
+		scanner: s,
+	}
+}
+
+func (f *jsonLineFilterReader) Read(p []byte) (int, error) {
+	for {
+		// Drain any buffered data from a previous line first.
+		if len(f.buf) > 0 {
+			n := copy(p, f.buf)
+			f.buf = f.buf[n:]
+			return n, nil
+		}
+
+		// Read the next line from the underlying reader.
+		if !f.scanner.Scan() {
+			if err := f.scanner.Err(); err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
+		}
+
+		line := f.scanner.Text()
+
+		// Skip non-JSON lines: any non-empty line that does not
+		// start with '{' cannot be the start of a JSON object.
+		// Empty/whitespace-only lines are preserved because
+		// jsontext.Decoder handles whitespace between values.
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) > 0 && trimmed[0] != '{' {
+			continue
+		}
+
+		// Re-append the newline so jsontext.Decoder sees the same
+		// byte stream it would without filtering.
+		f.buf = append([]byte(line), '\n')
+	}
+}
+
 // Connect starts the Claude Code CLI subprocess.
 func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
@@ -146,8 +210,10 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 		return fmt.Errorf("start process: %w", err)
 	}
 
-	// Set up message reader - jsontext.Decoder handles streaming natively
-	t.messageReader = jsontext.NewDecoder(t.stdout)
+	// Set up message reader. Wrap stdout in a filter that drops non-JSON
+	// diagnostic lines (e.g. "[SandboxDebug] ...") which would otherwise
+	// corrupt the JSON decoder's parse state.
+	t.messageReader = jsontext.NewDecoder(newJSONLineFilterReader(t.stdout))
 
 	// Handle stderr in background (only when piped through callback)
 	if t.options.stderrCallback != nil {
