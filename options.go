@@ -32,14 +32,18 @@ const (
 
 // AgentDefinition defines a custom agent.
 type AgentDefinition struct {
-	Description string   `json:"description"`
-	Prompt      string   `json:"prompt"`
-	Tools       []string `json:"tools,omitzero"`
-	Model       string   `json:"model,omitzero"` // "sonnet", "opus", "haiku", "inherit"
-	Skills      []string `json:"skills,omitzero"`
-	Memory      *string  `json:"memory,omitzero"` // "user", "project", "local"
+	Description     string   `json:"description"`
+	Prompt          string   `json:"prompt"`
+	Tools           []string `json:"tools,omitzero"`
+	DisallowedTools []string `json:"disallowedTools,omitzero"`
+	// Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
+	Model  string   `json:"model,omitzero"`
+	Skills []string `json:"skills,omitzero"`
+	Memory *string  `json:"memory,omitzero"` // "user", "project", "local"
 	// Each entry is a server name (string) or an inline map (name -> config).
-	McpServers []any `json:"mcpServers,omitzero"`
+	McpServers    []any   `json:"mcpServers,omitzero"`
+	InitialPrompt *string `json:"initialPrompt,omitzero"`
+	MaxTurns      *int    `json:"maxTurns,omitzero"`
 }
 
 // SandboxSettings configures the sandbox for bash commands.

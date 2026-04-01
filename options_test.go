@@ -326,6 +326,104 @@ func TestAgentDefinitionJSON(t *testing.T) {
 		assert.Equal(t, "project", m["memory"])
 	})
 
+	t.Run("disallowedTools and maxTurns serialize as camelCase", func(t *testing.T) {
+		maxTurns := 10
+		agent := AgentDefinition{
+			Description:     "test",
+			Prompt:          "p",
+			DisallowedTools: []string{"Bash", "Write"},
+			MaxTurns:        &maxTurns,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		tools, ok := m["disallowedTools"].([]any)
+		require.True(t, ok)
+		assert.Equal(t, []any{"Bash", "Write"}, tools)
+		assert.NotContains(t, m, "disallowed_tools")
+
+		assert.Equal(t, float64(10), m["maxTurns"])
+		assert.NotContains(t, m, "max_turns")
+	})
+
+	t.Run("initialPrompt serializes as camelCase", func(t *testing.T) {
+		initialPrompt := "/review-pr 123"
+		agent := AgentDefinition{
+			Description:   "test",
+			Prompt:        "p",
+			InitialPrompt: &initialPrompt,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, "/review-pr 123", m["initialPrompt"])
+		assert.NotContains(t, m, "initial_prompt")
+	})
+
+	t.Run("model accepts full model IDs", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			Model:       "claude-opus-4-5",
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, "claude-opus-4-5", m["model"])
+	})
+
+	t.Run("new optional fields omitted when unset", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.NotContains(t, m, "disallowedTools")
+		assert.NotContains(t, m, "maxTurns")
+		assert.NotContains(t, m, "initialPrompt")
+	})
+
+	t.Run("round-trip preserves all new fields", func(t *testing.T) {
+		maxTurns := 5
+		initialPrompt := "hello"
+		original := AgentDefinition{
+			Description:     "desc",
+			Prompt:          "prompt",
+			DisallowedTools: []string{"Bash"},
+			MaxTurns:        &maxTurns,
+			InitialPrompt:   &initialPrompt,
+			Model:           "claude-opus-4-5",
+		}
+		data, err := json.Marshal(original)
+		require.NoError(t, err)
+
+		var decoded AgentDefinition
+		require.NoError(t, json.Unmarshal(data, &decoded))
+
+		assert.Equal(t, original.Description, decoded.Description)
+		assert.Equal(t, original.Prompt, decoded.Prompt)
+		assert.Equal(t, original.DisallowedTools, decoded.DisallowedTools)
+		require.NotNil(t, decoded.MaxTurns)
+		assert.Equal(t, 5, *decoded.MaxTurns)
+		require.NotNil(t, decoded.InitialPrompt)
+		assert.Equal(t, "hello", *decoded.InitialPrompt)
+		assert.Equal(t, "claude-opus-4-5", decoded.Model)
+	})
+
 	t.Run("mcpServers serializes as camelCase", func(t *testing.T) {
 		agent := AgentDefinition{
 			Description: "test",
