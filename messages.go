@@ -58,6 +58,7 @@ type ResultMessage struct {
 	IsError          bool        `json:"is_error"`
 	NumTurns         int         `json:"num_turns"`
 	SessionID        string      `json:"session_id"`
+	StopReason       *string     `json:"stop_reason,omitzero"`
 	TotalCostUSD     *float64    `json:"total_cost_usd,omitzero"`
 	Usage            *UsageStats `json:"usage,omitzero"`
 	Result           string      `json:"result,omitzero"`

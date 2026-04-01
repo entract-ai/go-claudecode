@@ -232,6 +232,52 @@ func TestParseResultMessage(t *testing.T) {
 	require.NotNil(t, resultMsg.Usage)
 	assert.Equal(t, 100, resultMsg.Usage.InputTokens)
 	assert.Equal(t, 50, resultMsg.Usage.OutputTokens)
+	assert.Nil(t, resultMsg.StopReason, "stop_reason should be nil when absent from JSON")
+}
+
+func TestParseResultMessage_WithStopReason(t *testing.T) {
+	input := `{
+		"type": "result",
+		"subtype": "success",
+		"duration_ms": 1000,
+		"duration_api_ms": 500,
+		"is_error": false,
+		"num_turns": 2,
+		"session_id": "session_123",
+		"stop_reason": "end_turn",
+		"result": "Done"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	require.NotNil(t, resultMsg.StopReason, "stop_reason should not be nil")
+	assert.Equal(t, "end_turn", *resultMsg.StopReason)
+	assert.Equal(t, "Done", resultMsg.Result)
+}
+
+func TestParseResultMessage_WithNullStopReason(t *testing.T) {
+	input := `{
+		"type": "result",
+		"subtype": "error_max_turns",
+		"duration_ms": 1000,
+		"duration_api_ms": 500,
+		"is_error": true,
+		"num_turns": 10,
+		"session_id": "session_123",
+		"stop_reason": null
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	resultMsg, ok := msg.(*ResultMessage)
+	require.True(t, ok, "expected *ResultMessage, got %T", msg)
+
+	assert.Nil(t, resultMsg.StopReason, "explicit null stop_reason should produce nil")
 }
 
 func TestParseSystemMessage(t *testing.T) {
