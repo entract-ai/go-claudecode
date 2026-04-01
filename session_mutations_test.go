@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -283,4 +284,270 @@ func splitNonEmpty(s string) []string {
 		result = append(result, s[start:])
 	}
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// TagSession tests
+// ---------------------------------------------------------------------------
+
+func TestTagSession(t *testing.T) {
+	t.Run("invalid session ID", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		err := TagSession("not-a-uuid", strPtr("tag"), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid session ID")
+
+		err = TagSession("", strPtr("tag"), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid session ID")
+	})
+
+	t.Run("empty tag", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		err = TagSession(sid, strPtr(""), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tag must be non-empty")
+
+		err = TagSession(sid, strPtr("   "), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tag must be non-empty")
+	})
+
+	t.Run("session not found", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		makeProjectDir(t, configDir, realPath)
+
+		sid := nextTestUUID(t)
+		err = TagSession(sid, strPtr("tag"), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("appends tag entry", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		err = TagSession(sid, strPtr("experiment"), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &entry))
+		assert.Equal(t, "tag", entry["type"])
+		assert.Equal(t, "experiment", entry["tag"])
+		assert.Equal(t, sid, entry["sessionId"])
+	})
+
+	t.Run("tag trimmed before storing", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		err = TagSession(sid, strPtr("  my-tag  "), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &entry))
+		assert.Equal(t, "my-tag", entry["tag"])
+	})
+
+	t.Run("nil clears tag", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		// Set a tag first, then clear it
+		err = TagSession(sid, strPtr("original-tag"), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+		err = TagSession(sid, nil, WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		// Last entry is the clear
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &entry))
+		assert.Equal(t, "tag", entry["type"])
+		assert.Equal(t, "", entry["tag"])
+		assert.Equal(t, sid, entry["sessionId"])
+	})
+
+	t.Run("last tag wins", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		require.NoError(t, TagSession(sid, strPtr("first"), WithSessionDirectory(projectPath), withTestConfigDir(configDir)))
+		require.NoError(t, TagSession(sid, strPtr("second"), WithSessionDirectory(projectPath), withTestConfigDir(configDir)))
+		require.NoError(t, TagSession(sid, strPtr("third"), WithSessionDirectory(projectPath), withTestConfigDir(configDir)))
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		var lastEntry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &lastEntry))
+		assert.Equal(t, "third", lastEntry["tag"])
+
+		// All three tag entries present
+		tagCount := 0
+		for _, line := range lines {
+			if strings.Contains(line, `"type":"tag"`) {
+				tagCount++
+			}
+		}
+		assert.Equal(t, 3, tagCount)
+	})
+
+	t.Run("compact JSON format", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		err = TagSession(sid, strPtr("mytag"), WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		expected := `{"type":"tag","tag":"mytag","sessionId":"` + sid + `"}`
+		assert.Equal(t, expected, lines[len(lines)-1])
+	})
+
+	t.Run("unicode sanitization applied", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, filePath := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		// Tag with zero-width space and BOM embedded
+		dirtyTag := "clean\u200btag\ufeff"
+		err = TagSession(sid, &dirtyTag, WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		lines := splitNonEmpty(string(data))
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &entry))
+		assert.Equal(t, "cleantag", entry["tag"])
+	})
+
+	t.Run("pure invisible chars rejected", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		invisible := "\u200b\u200c\ufeff"
+		err = TagSession(sid, &invisible, WithSessionDirectory(projectPath), withTestConfigDir(configDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tag must be non-empty")
+	})
+}
+
+// strPtr is a helper that returns a pointer to a string value.
+func strPtr(s string) *string {
+	return &s
+}
+
+// ---------------------------------------------------------------------------
+// sanitizeUnicode tests
+// ---------------------------------------------------------------------------
+
+func TestSanitizeUnicode(t *testing.T) {
+	t.Run("clean strings pass through unchanged", func(t *testing.T) {
+		assert.Equal(t, "hello", sanitizeUnicode("hello"))
+		assert.Equal(t, "tag-with-dashes_123", sanitizeUnicode("tag-with-dashes_123"))
+	})
+
+	t.Run("strips zero-width chars", func(t *testing.T) {
+		assert.Equal(t, "ab", sanitizeUnicode("a\u200bb"))   // zero-width space
+		assert.Equal(t, "ab", sanitizeUnicode("a\u200cb"))   // zero-width non-joiner
+		assert.Equal(t, "ab", sanitizeUnicode("a\u200db"))   // zero-width joiner
+	})
+
+	t.Run("strips BOM", func(t *testing.T) {
+		assert.Equal(t, "hello", sanitizeUnicode("\ufeffhello"))
+	})
+
+	t.Run("strips directional marks", func(t *testing.T) {
+		assert.Equal(t, "abc", sanitizeUnicode("a\u202ab\u202cc"))
+		assert.Equal(t, "abc", sanitizeUnicode("a\u2066b\u2069c"))
+	})
+
+	t.Run("strips private use area", func(t *testing.T) {
+		assert.Equal(t, "ab", sanitizeUnicode("a\ue000b"))
+		assert.Equal(t, "ab", sanitizeUnicode("a\uf8ffb"))
+	})
+
+	t.Run("NFKC normalization applied", func(t *testing.T) {
+		// Fullwidth 'A' -> ASCII 'A'
+		assert.Equal(t, "A", sanitizeUnicode("\uff21"))
+	})
+
+	t.Run("iterative convergence", func(t *testing.T) {
+		// A string that needs stripping still converges
+		result := sanitizeUnicode("a" + strings.Repeat("\u200b", 20) + "b")
+		assert.Equal(t, "ab", result)
+	})
+
+	t.Run("empty input returns empty", func(t *testing.T) {
+		assert.Equal(t, "", sanitizeUnicode(""))
+	})
+
+	t.Run("pure invisible returns empty", func(t *testing.T) {
+		assert.Equal(t, "", sanitizeUnicode("\u200b\u200c\ufeff"))
+	})
+
+	t.Run("soft hyphen stripped", func(t *testing.T) {
+		assert.Equal(t, "ab", sanitizeUnicode("a\u00adb"))
+	})
+
+	t.Run("word joiner stripped", func(t *testing.T) {
+		assert.Equal(t, "ab", sanitizeUnicode("a\u2060b"))
+	})
 }

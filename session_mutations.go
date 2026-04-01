@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // RenameSession renames a session by appending a custom-title JSONL entry.
@@ -37,6 +40,124 @@ func RenameSession(sessionID, title string, opts ...SessionOption) error {
 
 	o := applySessionOptions(opts...)
 	return appendToSession(sessionID, data, o)
+}
+
+// TagSession tags a session by appending a tag JSONL entry. Pass nil to
+// clear the tag.
+//
+// ListSessions reads the LAST tag from the file tail, so repeated calls are
+// safe -- the most recent wins. Passing nil appends an empty-string tag
+// entry which ListSessions treats as cleared.
+//
+// Tags are Unicode-sanitized before storing (removes zero-width chars,
+// directional marks, private-use characters, etc.) for CLI filter
+// compatibility.
+//
+// Returns an error if sessionID is not a valid UUID, if the tag is
+// empty/whitespace-only after sanitization (use nil to clear), or if the
+// session file cannot be found.
+func TagSession(sessionID string, tag *string, opts ...SessionOption) error {
+	if !validateUUID(sessionID) {
+		return fmt.Errorf("invalid session ID: %s", sessionID)
+	}
+
+	tagValue := ""
+	if tag != nil {
+		sanitized := strings.TrimSpace(sanitizeUnicode(*tag))
+		if sanitized == "" {
+			return errors.New("tag must be non-empty (use nil to clear)")
+		}
+		tagValue = sanitized
+	}
+
+	data := `{"type":"tag","tag":` + compactJSONString(tagValue) +
+		`,"sessionId":"` + sessionID + `"}` + "\n"
+
+	o := applySessionOptions(opts...)
+	return appendToSession(sessionID, data, o)
+}
+
+// sanitizeUnicode removes dangerous Unicode characters from a string.
+//
+// Iteratively applies NFKC normalization and strips format (Cf), private
+// use (Co), and unassigned (Cn) category characters, plus explicit ranges
+// for zero-width chars, directional marks, BOM, and private use area.
+// Repeats until stable (max 10 iterations), since NFKC normalization can
+// reveal new characters that need stripping.
+func sanitizeUnicode(value string) string {
+	current := value
+	for range 10 {
+		previous := current
+		// Apply NFKC normalization to handle composed character sequences.
+		current = norm.NFKC.String(current)
+		// Strip Cf (format), Co (private use), Cn (unassigned) categories
+		// and explicit dangerous ranges.
+		current = stripInvisible(current)
+		if current == previous {
+			break
+		}
+	}
+	return current
+}
+
+// stripInvisible removes Unicode characters that are invisible or dangerous:
+// - General categories Cf (format), Co (private use), Cn (unassigned)
+// - Explicit ranges: zero-width chars, directional marks, BOM, private use area
+func stripInvisible(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if shouldStripRune(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// shouldStripRune returns true if the rune should be removed during
+// Unicode sanitization.
+func shouldStripRune(r rune) bool {
+	// Explicit ranges matching the upstream TS/Python implementation.
+	switch {
+	case r >= 0x200B && r <= 0x200F:
+		// Zero-width spaces, LTR/RTL marks
+		return true
+	case r >= 0x202A && r <= 0x202E:
+		// Directional formatting characters
+		return true
+	case r >= 0x2066 && r <= 0x2069:
+		// Directional isolates
+		return true
+	case r == 0xFEFF:
+		// Byte order mark
+		return true
+	case r >= 0xE000 && r <= 0xF8FF:
+		// Basic Multilingual Plane private use
+		return true
+	case r >= 0xF0000 && r <= 0xFFFFD:
+		// Supplementary private use area A
+		return true
+	case r >= 0x100000 && r <= 0x10FFFD:
+		// Supplementary private use area B
+		return true
+	}
+
+	// General category checks: Cf (format), Co (private use), Cn (unassigned).
+	// These catch characters not covered by the explicit ranges above.
+	if unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Co, r) {
+		return true
+	}
+	// Cn (unassigned) -- not in any defined Unicode category.
+	// In Go, a rune that is not in any category table is effectively
+	// unassigned. We check by verifying it is not a letter, number,
+	// mark, punctuation, symbol, separator, or the explicit categories
+	// above.
+	if !unicode.IsGraphic(r) && !unicode.IsSpace(r) && !unicode.IsControl(r) {
+		return true
+	}
+
+	return false
 }
 
 // compactJSONString produces a JSON-encoded string value (with quotes).
