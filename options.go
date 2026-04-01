@@ -15,6 +15,7 @@ const (
 	PermissionAcceptEdits       PermissionMode = "acceptEdits"
 	PermissionPlan              PermissionMode = "plan"
 	PermissionBypassPermissions PermissionMode = "bypassPermissions"
+	PermissionDontAsk           PermissionMode = "dontAsk"
 )
 
 // Beta represents a beta feature flag.

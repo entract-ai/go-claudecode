@@ -123,6 +123,17 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "bypassPermissions", args[idx+1])
 	})
 
+	t.Run("with dontAsk permission mode", func(t *testing.T) {
+		opts := applyOptions(WithPermissionMode(PermissionDontAsk))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.Contains(t, args, "--permission-mode")
+		idx := indexOf(args, "--permission-mode")
+		assert.Equal(t, "dontAsk", args[idx+1])
+	})
+
 	t.Run("with session options", func(t *testing.T) {
 		opts := applyOptions(
 			WithContinueConversation(),

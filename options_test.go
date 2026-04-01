@@ -65,6 +65,12 @@ func TestApplyOptions(t *testing.T) {
 		assert.Equal(t, PermissionBypassPermissions, opts.permissionMode)
 	})
 
+	t.Run("with dontAsk permission mode", func(t *testing.T) {
+		opts := applyOptions(WithPermissionMode(PermissionDontAsk))
+		assert.Equal(t, PermissionDontAsk, opts.permissionMode)
+		assert.Equal(t, PermissionMode("dontAsk"), opts.permissionMode)
+	})
+
 	t.Run("with session options", func(t *testing.T) {
 		opts := applyOptions(
 			WithContinueConversation(),
