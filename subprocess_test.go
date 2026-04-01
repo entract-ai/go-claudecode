@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -507,6 +508,82 @@ func TestSubprocessTransport_buildArgs_PluginTypes(t *testing.T) {
 		_, err := transport.buildArgs()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported plugin type")
+	})
+}
+
+// envToMap converts a []string env list (KEY=VALUE entries) to a map.
+// Later entries override earlier ones, matching exec.Cmd behavior.
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, entry := range env {
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			m[k] = v
+		}
+	}
+	return m
+}
+
+func TestSubprocessTransport_buildEnv(t *testing.T) {
+	t.Run("CLAUDE_CODE_ENTRYPOINT defaults to sdk-go", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "sdk-go", m["CLAUDE_CODE_ENTRYPOINT"])
+	})
+
+	t.Run("caller can override CLAUDE_CODE_ENTRYPOINT via options env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDE_CODE_ENTRYPOINT", "custom-caller"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "custom-caller", m["CLAUDE_CODE_ENTRYPOINT"],
+			"user-provided CLAUDE_CODE_ENTRYPOINT should override the sdk-go default")
+	})
+
+	t.Run("CLAUDE_AGENT_SDK_VERSION cannot be overridden by user env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDE_AGENT_SDK_VERSION", "user-hacked-version"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, SDKVersion, m["CLAUDE_AGENT_SDK_VERSION"],
+			"CLAUDE_AGENT_SDK_VERSION must always reflect the actual SDK version")
+	})
+
+	t.Run("user env vars are passed through", func(t *testing.T) {
+		opts := applyOptions(WithEnv("MY_CUSTOM_VAR", "hello"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "hello", m["MY_CUSTOM_VAR"])
+	})
+
+	t.Run("cwd sets PWD", func(t *testing.T) {
+		opts := applyOptions(WithCWD("/some/dir"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "/some/dir", m["PWD"])
+	})
+
+	t.Run("enableFileCheckpointing sets env var", func(t *testing.T) {
+		opts := applyOptions(WithEnableFileCheckpointing())
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "true", m["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"])
 	})
 }
 

@@ -93,30 +93,17 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	}
 
 	// Set up environment - preserve sandbox-provided env vars (e.g., TMPDIR) if present
-	var env []string
+	var baseEnv []string
 	if t.cmd.Env != nil {
-		env = t.cmd.Env
+		baseEnv = t.cmd.Env
 	} else {
-		env = os.Environ()
+		baseEnv = os.Environ()
 	}
-	env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
-	env = append(env, fmt.Sprintf("CLAUDE_AGENT_SDK_VERSION=%s", SDKVersion))
+	t.cmd.Env = t.buildEnv(baseEnv)
 
 	if t.options.cwd != "" {
-		env = append(env, fmt.Sprintf("PWD=%s", t.options.cwd))
 		t.cmd.Dir = t.options.cwd
 	}
-
-	if t.options.enableFileCheckpointing {
-		env = append(env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
-	}
-
-	// Add user-provided environment variables
-	for k, v := range t.options.env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	t.cmd.Env = env
 
 	// Set up pipes
 	t.stdin, err = t.cmd.StdinPipe()
@@ -698,6 +685,41 @@ func compareVersions(a, b string) int {
 	}
 
 	return 0
+}
+
+// buildEnv constructs the environment variable list for the subprocess.
+//
+// Merge order (last entry wins for duplicate keys):
+//  1. baseEnv (inherited process env or sandbox-provided env)
+//  2. CLAUDE_CODE_ENTRYPOINT default ("sdk-go") -- user env can override
+//  3. PWD, file checkpointing, and other SDK internals
+//  4. User-provided env vars (options.env)
+//  5. CLAUDE_AGENT_SDK_VERSION -- always SDK-controlled, cannot be overridden
+func (t *SubprocessTransport) buildEnv(baseEnv []string) []string {
+	env := append(baseEnv[:0:0], baseEnv...) // copy to avoid mutating caller's slice
+
+	// CLAUDE_CODE_ENTRYPOINT acts as a default: set before user env
+	// so options.env can override it.
+	env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
+
+	if t.options.cwd != "" {
+		env = append(env, fmt.Sprintf("PWD=%s", t.options.cwd))
+	}
+
+	if t.options.enableFileCheckpointing {
+		env = append(env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
+	}
+
+	// User-provided environment variables
+	for k, v := range t.options.env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// CLAUDE_AGENT_SDK_VERSION is always SDK-controlled: set after user env
+	// so it cannot be overridden.
+	env = append(env, fmt.Sprintf("CLAUDE_AGENT_SDK_VERSION=%s", SDKVersion))
+
+	return env
 }
 
 func parseVersion(v string) [3]int {
