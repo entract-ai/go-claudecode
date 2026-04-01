@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 )
 
 // Query performs a one-shot query with a string prompt.
@@ -155,18 +154,17 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 				hasCanUseTool := options.canUseTool != nil
 
 				if hasSDKMCP || hasHooks || hasCanUseTool {
-					timeout, err := getEnvDurationWithDefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", DefaultStreamCloseTimeout)
-					if err != nil {
-						ch <- MessageOrError{Err: fmt.Errorf("get stream close timeout: %w", err)}
-						return
-					}
+					// Wait unconditionally for the first result. The control
+					// protocol requires stdin to remain open for the entire
+					// conversation when hooks or SDK MCP servers are active,
+					// so no timeout is applied. The event is guaranteed to
+					// fire: either when the result message arrives, or when
+					// the reader goroutine exits (e.g. process exit/crash).
 					select {
 					case <-firstResultReceived:
 						// Normal path - result received
 					case <-readerDone:
 						// Reader ended early (e.g., CLI failure) - don't wait further
-					case <-time.After(timeout):
-						// Timeout reached, continue anyway
 					case <-ctx.Done():
 						// Context cancelled
 					}

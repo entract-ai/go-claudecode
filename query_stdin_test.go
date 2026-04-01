@@ -130,6 +130,89 @@ func isControlResponse(data string) bool {
 	return false
 }
 
+// delayedResultTransport is a mock transport that blocks result delivery
+// until a signal channel is closed. This allows tests to observe whether
+// EndInput is called before or after the result arrives.
+type delayedResultTransport struct {
+	mu sync.Mutex
+
+	// resultReady is closed to release the result messages.
+	resultReady chan struct{}
+
+	// endInputCalled is closed when EndInput is invoked.
+	endInputCalled chan struct{}
+	endInputOnce   sync.Once
+
+	callLog   []stdinCall
+	connected bool
+	closed    bool
+}
+
+func (t *delayedResultTransport) Connect(ctx context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.connected = true
+	return nil
+}
+
+func (t *delayedResultTransport) Write(ctx context.Context, data string) error {
+	t.mu.Lock()
+	t.callLog = append(t.callLog, stdinCall{method: "write", data: data})
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *delayedResultTransport) ReadMessages(ctx context.Context) <-chan MessageOrError {
+	ch := make(chan MessageOrError, 100)
+	go func() {
+		defer close(ch)
+
+		// Wait for the signal before delivering any messages.
+		select {
+		case <-t.resultReady:
+		case <-ctx.Done():
+			return
+		}
+
+		for _, raw := range assistantAndResultMessages() {
+			msg, err := parseMessage(raw)
+			if err != nil {
+				ch <- MessageOrError{Err: err}
+				return
+			}
+			if msg == nil {
+				continue
+			}
+			ch <- MessageOrError{Message: msg, Raw: raw}
+		}
+	}()
+	return ch
+}
+
+func (t *delayedResultTransport) EndInput(ctx context.Context) error {
+	t.mu.Lock()
+	t.callLog = append(t.callLog, stdinCall{method: "end_input"})
+	t.mu.Unlock()
+
+	t.endInputOnce.Do(func() {
+		close(t.endInputCalled)
+	})
+	return nil
+}
+
+func (t *delayedResultTransport) Close(ctx context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
+	return nil
+}
+
+func (t *delayedResultTransport) IsReady() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.connected && !t.closed
+}
+
 // Standard test messages: an assistant message followed by a result.
 func assistantAndResultMessages() []json.RawMessage {
 	return []json.RawMessage{
@@ -269,7 +352,6 @@ func runQueryWithMockTransport(
 				select {
 				case <-firstResultReceived:
 				case <-readerDone:
-				case <-time.After(5 * time.Second): // Short timeout for tests
 				case <-ctx.Done():
 				}
 			}
@@ -574,6 +656,191 @@ func TestStringPromptStdinLifecycle(t *testing.T) {
 			}
 		}
 		assert.True(t, hasEndInput, "EndInput should still be called on early exit")
+	})
+
+	t.Run("hooks wait without timeout for result", func(t *testing.T) {
+		// Regression test for upstream Python SDK commit c3d96cb:
+		// When hooks are configured, EndInput must NOT be called until the
+		// result event fires. There must be no timeout that prematurely
+		// closes stdin during long conversations.
+		//
+		// The test delays result delivery and verifies that EndInput is not
+		// called during the delay, only after the result arrives.
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Use a channel-based transport so we control exactly when messages arrive.
+		resultCh := make(chan struct{})
+		transport := &delayedResultTransport{
+			resultReady:    resultCh,
+			endInputCalled: make(chan struct{}),
+		}
+
+		options := &Options{
+			hooks: map[HookEvent][]HookMatcher{
+				HookPreToolUse: {
+					{
+						Matcher: "Bash",
+						Hooks: []HookCallback{
+							func(ctx context.Context, input HookInput, toolUseID *string) (HookOutput, error) {
+								return HookOutput{}, nil
+							},
+						},
+					},
+				},
+			},
+		}
+
+		options.streamingMode = true
+		err := transport.Connect(ctx)
+		require.NoError(t, err)
+
+		router := NewControlRouter(transport, options)
+
+		msgCh := transport.ReadMessages(ctx)
+
+		firstResultReceived := make(chan struct{})
+		var firstResultOnce sync.Once
+
+		routedCh := make(chan MessageOrError, 100)
+		readerDone := make(chan struct{})
+
+		var wg sync.WaitGroup
+
+		// Reader goroutine
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(routedCh)
+			defer close(readerDone)
+
+			for msg := range msgCh {
+				if msg.Err != nil {
+					routedCh <- msg
+					continue
+				}
+				handled, err := router.HandleMessage(ctx, msg.Message, msg.Raw)
+				if err != nil {
+					routedCh <- MessageOrError{Err: err}
+					continue
+				}
+				if handled {
+					continue
+				}
+				if _, ok := msg.Message.(*ResultMessage); ok {
+					firstResultOnce.Do(func() {
+						close(firstResultReceived)
+					})
+				}
+				routedCh <- msg
+			}
+		}()
+
+		router.setInitialized(nil)
+
+		// Input streaming goroutine -- same logic as production QueryWithInput
+		input := make(chan InputMessage, 1)
+		input <- NewUserInput("Do something")
+		close(input)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				hasSDKMCP := len(options.sdkMCPServers) > 0
+				hasHooks := len(options.hooks) > 0
+				hasCanUseTool := options.canUseTool != nil
+
+				if hasSDKMCP || hasHooks || hasCanUseTool {
+					select {
+					case <-firstResultReceived:
+					case <-readerDone:
+					case <-ctx.Done():
+					}
+				}
+
+				transport.EndInput(ctx)
+			}()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg, ok := <-input:
+					if !ok {
+						return
+					}
+					data, merr := json.Marshal(msg)
+					if merr != nil {
+						return
+					}
+					_ = transport.Write(ctx, string(data)+"\n")
+				}
+			}
+		}()
+
+		// Wait a bit -- EndInput must NOT have been called yet because the
+		// result hasn't arrived.
+		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-transport.endInputCalled:
+			t.Fatal("EndInput was called before result arrived -- timeout bug")
+		default:
+			// Good: EndInput hasn't been called yet.
+		}
+
+		// Now release the result messages.
+		close(resultCh)
+
+		// Wait for EndInput to be called.
+		select {
+		case <-transport.endInputCalled:
+			// Good: EndInput was called after result arrived.
+		case <-time.After(5 * time.Second):
+			t.Fatal("EndInput was not called after result arrived")
+		}
+
+		// Drain remaining messages.
+		for range routedCh {
+		}
+		wg.Wait()
+		transport.Close(ctx)
+	})
+
+	t.Run("no hooks closes stdin immediately", func(t *testing.T) {
+		// Without hooks or SDK MCP servers, EndInput should be called
+		// immediately without waiting for any event.
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		transport := &stdinLifecycleTransport{
+			messages:       assistantAndResultMessages(),
+			endInputCalled: make(chan struct{}),
+		}
+
+		options := &Options{} // No MCP servers, no hooks
+
+		input := make(chan InputMessage, 1)
+		input <- NewUserInput("Hello")
+		close(input)
+
+		messages := runQueryWithMockTransport(t, ctx, transport, options, input)
+
+		require.Len(t, messages, 2)
+		assert.IsType(t, &AssistantMessage{}, messages[0])
+		assert.IsType(t, &ResultMessage{}, messages[1])
+
+		// EndInput should have been called without waiting for any result.
+		calls := transport.getCalls()
+		hasEndInput := false
+		for _, c := range calls {
+			if c.method == "end_input" {
+				hasEndInput = true
+			}
+		}
+		assert.True(t, hasEndInput, "EndInput should have been called immediately")
 	})
 
 	t.Run("async iterable with MCP servers shares same behavior", func(t *testing.T) {

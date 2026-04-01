@@ -22,9 +22,6 @@ const (
 	// MinimumCLIVersion is the minimum supported Claude Code CLI version.
 	MinimumCLIVersion = "2.0.0"
 
-	// DefaultStreamCloseTimeout is the default timeout for closing stdin.
-	DefaultStreamCloseTimeout = 60 * time.Second
-
 	// SDKVersion is the version of this SDK.
 	SDKVersion = "0.1.0"
 
