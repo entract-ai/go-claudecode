@@ -107,6 +107,58 @@ type MCPSDKConfig struct {
 
 func (*MCPSDKConfig) mcpServerConfigMarker() {}
 
+// McpServerConnectionStatus represents the connection status of an MCP server.
+type McpServerConnectionStatus string
+
+const (
+	McpStatusConnected McpServerConnectionStatus = "connected"
+	McpStatusFailed    McpServerConnectionStatus = "failed"
+	McpStatusNeedsAuth McpServerConnectionStatus = "needs-auth"
+	McpStatusPending   McpServerConnectionStatus = "pending"
+	McpStatusDisabled  McpServerConnectionStatus = "disabled"
+)
+
+// McpServerInfo contains server info from the MCP initialize handshake.
+// Available when the server status is "connected".
+type McpServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// McpToolAnnotations describes tool behavior annotations returned in MCP
+// server status. Wire format uses camelCase field names.
+type McpToolAnnotations struct {
+	ReadOnly    *bool `json:"readOnly,omitempty"`
+	Destructive *bool `json:"destructive,omitempty"`
+	OpenWorld   *bool `json:"openWorld,omitempty"`
+}
+
+// McpToolInfo describes a tool provided by an MCP server.
+type McpToolInfo struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Annotations *McpToolAnnotations `json:"annotations,omitempty"`
+}
+
+// McpServerStatus contains the status of an MCP server connection.
+// Returned by Client.GetMCPStatus in the McpServers list.
+type McpServerStatus struct {
+	Name       string                    `json:"name"`
+	Status     McpServerConnectionStatus `json:"status"`
+	ServerInfo *McpServerInfo            `json:"serverInfo,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+	Config     map[string]any            `json:"config,omitempty"`
+	Scope      string                    `json:"scope,omitempty"`
+	Tools      []McpToolInfo             `json:"tools,omitempty"`
+}
+
+// McpStatusResponse is the response from Client.GetMCPStatus.
+// It wraps the list of server statuses under the McpServers key, matching
+// the wire-format response shape.
+type McpStatusResponse struct {
+	McpServers []McpServerStatus `json:"mcpServers"`
+}
+
 // CanUseToolFunc is the callback type for tool permission decisions.
 type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error)
 

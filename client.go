@@ -385,11 +385,42 @@ func (c *Client) SetModel(ctx context.Context, model string) error {
 	return router.SetModel(ctx, model)
 }
 
-// GetMCPStatus returns the MCP server connection status.
-func (c *Client) GetMCPStatus(ctx context.Context) (map[string]any, error) {
+// ReconnectMCPServer reconnects a disconnected or failed MCP server.
+// Only works with streaming mode (Client).
+func (c *Client) ReconnectMCPServer(ctx context.Context, serverName string) error {
 	router, err := c.getRouterIfConnected()
 	if err != nil {
-		return nil, err
+		return err
+	}
+	return router.ReconnectMCPServer(ctx, serverName)
+}
+
+// ToggleMCPServer enables or disables an MCP server.
+// Only works with streaming mode (Client).
+func (c *Client) ToggleMCPServer(ctx context.Context, serverName string, enabled bool) error {
+	router, err := c.getRouterIfConnected()
+	if err != nil {
+		return err
+	}
+	return router.ToggleMCPServer(ctx, serverName, enabled)
+}
+
+// StopTask stops a running task. After this returns, a task_notification
+// system message with status "stopped" will be emitted in the message stream.
+// Only works with streaming mode (Client).
+func (c *Client) StopTask(ctx context.Context, taskID string) error {
+	router, err := c.getRouterIfConnected()
+	if err != nil {
+		return err
+	}
+	return router.StopTask(ctx, taskID)
+}
+
+// GetMCPStatus returns the MCP server connection status.
+func (c *Client) GetMCPStatus(ctx context.Context) (McpStatusResponse, error) {
+	router, err := c.getRouterIfConnected()
+	if err != nil {
+		return McpStatusResponse{}, err
 	}
 	return router.GetMCPStatus(ctx)
 }

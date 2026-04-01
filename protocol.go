@@ -583,9 +583,53 @@ func (r *ControlRouter) SetModel(ctx context.Context, model string) error {
 	return err
 }
 
-// GetMCPStatus returns the MCP server status.
-func (r *ControlRouter) GetMCPStatus(ctx context.Context) (map[string]any, error) {
-	return r.sendControlRequest(ctx, map[string]any{"subtype": "mcp_status"}, DefaultControlTimeout)
+// GetMCPStatus returns the MCP server connection status.
+func (r *ControlRouter) GetMCPStatus(ctx context.Context) (McpStatusResponse, error) {
+	raw, err := r.sendControlRequest(ctx, map[string]any{"subtype": "mcp_status"}, DefaultControlTimeout)
+	if err != nil {
+		return McpStatusResponse{}, err
+	}
+
+	// Re-marshal the raw response map and decode into the typed struct.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return McpStatusResponse{}, fmt.Errorf("marshal mcp_status response: %w", err)
+	}
+
+	var resp McpStatusResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return McpStatusResponse{}, fmt.Errorf("decode mcp_status response: %w", err)
+	}
+	return resp, nil
+}
+
+// ReconnectMCPServer sends a control request to reconnect a disconnected or
+// failed MCP server.
+func (r *ControlRouter) ReconnectMCPServer(ctx context.Context, serverName string) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype":    "mcp_reconnect",
+		"serverName": serverName,
+	}, DefaultControlTimeout)
+	return err
+}
+
+// ToggleMCPServer sends a control request to enable or disable an MCP server.
+func (r *ControlRouter) ToggleMCPServer(ctx context.Context, serverName string, enabled bool) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype":    "mcp_toggle",
+		"serverName": serverName,
+		"enabled":    enabled,
+	}, DefaultControlTimeout)
+	return err
+}
+
+// StopTask sends a control request to stop a running task.
+func (r *ControlRouter) StopTask(ctx context.Context, taskID string) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype": "stop_task",
+		"task_id": taskID,
+	}, DefaultControlTimeout)
+	return err
 }
 
 // RewindFiles rewinds tracked files to a specific user message.
