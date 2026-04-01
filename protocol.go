@@ -223,6 +223,8 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 			Input                 map[string]any `json:"input"`
 			PermissionSuggestions []any          `json:"permission_suggestions"`
 			BlockedPath           string         `json:"blocked_path"`
+			ToolUseID             string         `json:"tool_use_id"`
+			AgentID               string         `json:"agent_id"`
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
@@ -232,6 +234,8 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 	permCtx := ToolPermissionContext{
 		Suggestions: parsePermissionSuggestions(request.Request.PermissionSuggestions),
 		BlockedPath: request.Request.BlockedPath,
+		ToolUseID:   request.Request.ToolUseID,
+		AgentID:     request.Request.AgentID,
 	}
 
 	result, err := r.options.canUseTool(ctx, request.Request.ToolName, request.Request.Input, permCtx)

@@ -134,6 +134,95 @@ func TestHandleCanUseTool_BlockedPath(t *testing.T) {
 	assert.Equal(t, "/etc/sensitive", receivedCtx.BlockedPath)
 }
 
+func TestHandleCanUseTool_ToolUseIDAndAgentID(t *testing.T) {
+	// Verify that tool_use_id and agent_id are parsed and passed to the callback.
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_2",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Bash",
+			"input": {"command": "ls"},
+			"permission_suggestions": [],
+			"tool_use_id": "toolu_01ABC123",
+			"agent_id": "agent-456"
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Equal(t, "toolu_01ABC123", receivedCtx.ToolUseID)
+	assert.Equal(t, "agent-456", receivedCtx.AgentID)
+}
+
+func TestHandleCanUseTool_MissingAgentID(t *testing.T) {
+	// Verify that agent_id defaults to empty string when not present in the request
+	// (e.g. when the tool call comes from the top-level agent, not a sub-agent).
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_3",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Bash",
+			"input": {"command": "pwd"},
+			"permission_suggestions": [],
+			"tool_use_id": "toolu_01XYZ789"
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Equal(t, "toolu_01XYZ789", receivedCtx.ToolUseID)
+	assert.Empty(t, receivedCtx.AgentID)
+}
+
+func TestHandleCanUseTool_MissingToolUseID(t *testing.T) {
+	// Verify that tool_use_id defaults to empty string when not present.
+	// This guards against older CLI versions that might not send tool_use_id.
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_4",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Write",
+			"input": {"path": "/tmp/test"},
+			"permission_suggestions": []
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Empty(t, receivedCtx.ToolUseID)
+	assert.Empty(t, receivedCtx.AgentID)
+}
+
 func TestControlRouter_HandleMessage_NonControlPassthrough(t *testing.T) {
 	// Non-control messages (user, assistant, system, result, stream events)
 	// should pass through HandleMessage and return handled=false.

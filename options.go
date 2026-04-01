@@ -175,6 +175,15 @@ type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]
 type ToolPermissionContext struct {
 	Suggestions []PermissionUpdate
 	BlockedPath string // path that triggered the permission check
+
+	// ToolUseID is the unique identifier for this specific tool call within the
+	// assistant message. Multiple tool calls in the same assistant message will
+	// have different ToolUseIDs.
+	ToolUseID string
+
+	// AgentID identifies the sub-agent that requested this tool call, if any.
+	// Empty when the tool call comes from the top-level agent.
+	AgentID string
 }
 
 // PermissionResult is a marker interface for permission decisions.
