@@ -290,13 +290,132 @@ func TestParseControlRequest(t *testing.T) {
 }
 
 func TestParseUnknownType(t *testing.T) {
+	// Unknown message types should return (nil, nil) for forward compatibility.
+	// The SDK must not crash when the CLI emits new message types that the
+	// SDK doesn't know about yet.
 	input := `{"type": "unknown_type"}`
 
-	_, err := parseMessage(json.RawMessage(input))
-	require.Error(t, err)
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err, "unknown message types should not return an error")
+	assert.Nil(t, msg, "unknown message types should return nil message")
+}
 
-	assert.ErrorIs(t, err, ErrUnknownMessageType)
-	assert.Contains(t, err.Error(), "unknown_type")
+func TestParseRateLimitEvent(t *testing.T) {
+	// CLI v2.1.45+ emits rate_limit_event messages. The SDK should
+	// skip these gracefully rather than crashing.
+	t.Run("allowed warning", func(t *testing.T) {
+		input := `{
+			"type": "rate_limit_event",
+			"rate_limit_info": {
+				"status": "allowed_warning",
+				"resetsAt": 1700000000,
+				"rateLimitType": "five_hour",
+				"utilization": 0.85,
+				"isUsingOverage": false
+			},
+			"uuid": "550e8400-e29b-41d4-a716-446655440000",
+			"session_id": "test-session-id"
+		}`
+
+		msg, err := parseMessage(json.RawMessage(input))
+		require.NoError(t, err, "rate_limit_event should not return an error")
+		assert.Nil(t, msg, "rate_limit_event should return nil message")
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		input := `{
+			"type": "rate_limit_event",
+			"rate_limit_info": {
+				"status": "rejected",
+				"resetsAt": 1700003600,
+				"rateLimitType": "seven_day",
+				"isUsingOverage": false,
+				"overageStatus": "rejected",
+				"overageDisabledReason": "out_of_credits"
+			},
+			"uuid": "660e8400-e29b-41d4-a716-446655440001",
+			"session_id": "test-session-id"
+		}`
+
+		msg, err := parseMessage(json.RawMessage(input))
+		require.NoError(t, err, "rate_limit_event should not return an error")
+		assert.Nil(t, msg, "rate_limit_event should return nil message")
+	})
+}
+
+func TestParseForwardCompatibility(t *testing.T) {
+	// The SDK should handle arbitrary future message types gracefully.
+	futureTypes := []string{
+		"some_future_event",
+		"debug_info",
+		"telemetry",
+		"performance_metrics",
+		"billing_update",
+	}
+
+	for _, msgType := range futureTypes {
+		t.Run(msgType, func(t *testing.T) {
+			input := `{"type": "` + msgType + `", "data": {"key": "value"}}`
+
+			msg, err := parseMessage(json.RawMessage(input))
+			require.NoError(t, err, "future message type %q should not return an error", msgType)
+			assert.Nil(t, msg, "future message type %q should return nil message", msgType)
+		})
+	}
+}
+
+func TestParseKnownTypesStillWork(t *testing.T) {
+	// After the forward-compatibility change, known types must still parse normally.
+	input := `{
+		"type": "assistant",
+		"message": {
+			"content": [{"type": "text", "text": "hello"}],
+			"model": "claude-sonnet-4-6-20250929"
+		}
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+	require.NotNil(t, msg, "known message types must not return nil")
+
+	assistantMsg, ok := msg.(*AssistantMessage)
+	require.True(t, ok, "expected *AssistantMessage, got %T", msg)
+	assert.Equal(t, "hello", assistantMsg.GetText())
+}
+
+func TestParseMalformedKnownTypeStillErrors(t *testing.T) {
+	// Malformed data for a known type should still return an error.
+	// The forward-compatibility change only affects truly unknown types.
+	// Use invalid JSON in the content field to trigger a real parse error.
+	input := `{"type": "assistant", "message": {"content": "not-an-array", "model": "test"}}`
+
+	_, err := parseMessage(json.RawMessage(input))
+	require.Error(t, err, "malformed known types should still return errors")
+}
+
+func TestParseMissingTypeFieldStillErrors(t *testing.T) {
+	// A message with no "type" field at all is not forward-compatible --
+	// it's genuinely broken. This should still be a MessageParseError.
+	input := `{"data": "no type field here"}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.Error(t, err, "missing type field should return an error")
+	assert.Nil(t, msg)
+
+	var parseErr *MessageParseError
+	assert.ErrorAs(t, err, &parseErr, "missing type should be a MessageParseError")
+}
+
+func TestParseEmptyTypeFieldStillErrors(t *testing.T) {
+	// An explicit empty string type is also invalid.
+	input := `{"type": ""}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.Error(t, err, "empty type field should return an error")
+	assert.Nil(t, msg)
+
+	var parseErr *MessageParseError
+	assert.ErrorAs(t, err, &parseErr, "empty type should be a MessageParseError")
 }
 
 func TestUserMessage_GetText(t *testing.T) {

@@ -133,6 +133,29 @@ func TestParseTranscript(t *testing.T) {
 	}
 }
 
+func TestParseTranscript_UnknownTypesSkipped(t *testing.T) {
+	// Unknown message types (including rate_limit_event) should be silently
+	// skipped in transcript parsing, not cause errors.
+	content := `{"type":"user","message":{"role":"user","content":"Hello"},"uuid":"u1"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}
+{"type":"some_future_event","data":"whatever"}
+{"type":"assistant","message":{"model":"claude-3-5-sonnet","content":[{"type":"text","text":"Hi!"}]}}`
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "transcript.jsonl")
+	err := os.WriteFile(path, []byte(content), 0o644)
+	require.NoError(t, err)
+
+	messages, err := ParseTranscript(path)
+	require.NoError(t, err, "unknown message types in transcript should not cause errors")
+	assert.Len(t, messages, 2, "only known message types should be returned")
+
+	_, ok := messages[0].(*UserMessage)
+	assert.True(t, ok, "first message should be UserMessage")
+	_, ok = messages[1].(*AssistantMessage)
+	assert.True(t, ok, "second message should be AssistantMessage")
+}
+
 func TestParseTranscript_FileNotFound(t *testing.T) {
 	_, err := ParseTranscript("/nonexistent/path/to/transcript.jsonl")
 	require.Error(t, err)

@@ -110,12 +110,23 @@ type ControlCancelRequest struct {
 func (ControlCancelRequest) messageMarker() {}
 
 // parseMessage parses a raw JSON message into a typed Message.
+// For recognized message types, it returns the parsed message.
+// For unrecognized message types, it returns (nil, nil) to signal that the
+// message should be silently skipped. This makes the SDK forward-compatible
+// with new CLI message types (e.g., rate_limit_event) that it doesn't yet
+// understand.
+// For genuinely broken messages (missing type field, malformed JSON), it
+// returns an error.
 func parseMessage(raw json.RawMessage) (Message, error) {
 	var typeHolder struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(raw, &typeHolder); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse message type: %v", err)}
+	}
+
+	if typeHolder.Type == "" {
+		return nil, &MessageParseError{Message: "message missing 'type' field"}
 	}
 
 	switch typeHolder.Type {
@@ -136,7 +147,9 @@ func parseMessage(raw json.RawMessage) (Message, error) {
 	case "control_cancel_request":
 		return parseControlCancelRequest(raw)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnknownMessageType, typeHolder.Type)
+		// Forward-compatible: skip unrecognized message types so newer
+		// CLI versions don't crash older SDK versions.
+		return nil, nil
 	}
 }
 

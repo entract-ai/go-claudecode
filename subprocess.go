@@ -236,6 +236,12 @@ func (t *SubprocessTransport) ReadMessages(ctx context.Context) <-chan MessageOr
 				return
 			}
 
+			// Skip unknown message types (parseMessage returns nil, nil).
+			// This makes the SDK forward-compatible with new CLI message types.
+			if msg == nil {
+				continue
+			}
+
 			ch <- MessageOrError{Message: msg, Raw: rawMsg}
 		}
 	}()

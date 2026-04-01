@@ -27,6 +27,10 @@ var (
 	// ErrClientClosed indicates the client has been closed and cannot be reused.
 	ErrClientClosed = errors.New("client has been closed and cannot be reused")
 	// ErrUnknownMessageType indicates an unrecognized message type in a transcript.
+	//
+	// Deprecated: Unknown message types are now silently skipped for forward
+	// compatibility. This sentinel is retained for backward compatibility but
+	// is no longer returned by any function in this package.
 	ErrUnknownMessageType = errors.New("unknown message type")
 )
 
