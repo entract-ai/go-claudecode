@@ -11,6 +11,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestConnectWithPrompt_WritesUserMessageToTransport(t *testing.T) {
+	// Verify that ConnectWithPrompt sends the string prompt as a JSON user
+	// message to the transport. This is the Go equivalent of Python SDK bug
+	// #766 where connect(prompt="...") stored the string but never sent it,
+	// causing receive_messages() to hang. The Go SDK handles this correctly
+	// via sendQuery in the string case of connectInternal's type switch.
+
+	messages := []MessageOrError{
+		{Message: &ResultMessage{SessionID: "test-session"}},
+	}
+	transport := newControlAwareMockTransport(messages, 0)
+	client := NewClientWithTransport(transport)
+	ctx := context.Background()
+
+	err := client.ConnectWithPrompt(ctx, "Hello Claude")
+	require.NoError(t, err)
+
+	// The transport's writeCh should contain the prompt message.
+	// The init request was consumed by ReadMessages; the prompt write
+	// remains in the buffered channel.
+	select {
+	case data := <-transport.writeCh:
+		var msg struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			SessionID string `json:"session_id"`
+		}
+		err := json.Unmarshal([]byte(data), &msg)
+		require.NoError(t, err, "prompt should be valid JSON")
+		assert.Equal(t, "user", msg.Type)
+		assert.Equal(t, "user", msg.Message.Role)
+		assert.Equal(t, "Hello Claude", msg.Message.Content)
+		assert.Equal(t, "default", msg.SessionID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for prompt write -- string prompt was not sent to transport")
+	}
+
+	// Clean up
+	err = client.Close(ctx)
+	require.NoError(t, err)
+}
+
 func TestClient_ClosedCannotReconnect(t *testing.T) {
 	client := NewClient()
 
