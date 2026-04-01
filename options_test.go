@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -259,4 +260,81 @@ func TestHookOptions(t *testing.T) {
 	assert.Len(t, opts.hooks, 2)
 	assert.Len(t, opts.hooks[HookPreToolUse], 1)
 	assert.Len(t, opts.hooks[HookPostToolUse], 1)
+}
+
+func TestAgentDefinitionJSON(t *testing.T) {
+	t.Run("minimal definition omits unset fields", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "You are a test",
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, "test", m["description"])
+		assert.Equal(t, "You are a test", m["prompt"])
+		// Zero-value optional fields must not appear in the JSON.
+		assert.NotContains(t, m, "tools")
+		assert.NotContains(t, m, "model")
+		assert.NotContains(t, m, "skills")
+		assert.NotContains(t, m, "memory")
+		assert.NotContains(t, m, "mcpServers")
+	})
+
+	t.Run("skills and memory serialize correctly", func(t *testing.T) {
+		memory := "project"
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			Skills:      []string{"skill-a", "skill-b"},
+			Memory:      &memory,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		skills, ok := m["skills"].([]any)
+		require.True(t, ok)
+		assert.Equal(t, []any{"skill-a", "skill-b"}, skills)
+		assert.Equal(t, "project", m["memory"])
+	})
+
+	t.Run("mcpServers serializes as camelCase", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			McpServers: []any{
+				"slack",
+				map[string]any{
+					"local": map[string]any{
+						"command": "python",
+						"args":    []string{"server.py"},
+					},
+				},
+			},
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		// Must be camelCase, not snake_case.
+		assert.Contains(t, m, "mcpServers")
+		assert.NotContains(t, m, "mcp_servers")
+
+		servers, ok := m["mcpServers"].([]any)
+		require.True(t, ok)
+		assert.Equal(t, "slack", servers[0])
+		inline, ok := servers[1].(map[string]any)
+		require.True(t, ok)
+		local, ok := inline["local"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "python", local["command"])
+	})
 }

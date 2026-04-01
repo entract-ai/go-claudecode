@@ -35,6 +35,10 @@ type AgentDefinition struct {
 	Prompt      string   `json:"prompt"`
 	Tools       []string `json:"tools,omitzero"`
 	Model       string   `json:"model,omitzero"` // "sonnet", "opus", "haiku", "inherit"
+	Skills      []string `json:"skills,omitzero"`
+	Memory      *string  `json:"memory,omitzero"` // "user", "project", "local"
+	// Each entry is a server name (string) or an inline map (name -> config).
+	McpServers []any `json:"mcpServers,omitzero"`
 }
 
 // SandboxSettings configures the sandbox for bash commands.
