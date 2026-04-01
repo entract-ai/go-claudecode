@@ -28,6 +28,12 @@ func ToChatMessage(msg Message) (chat.Message, error) {
 		return assistantMessageToChatMessage(m)
 	case *SystemMessage:
 		return chat.Message{}, fmt.Errorf("cannot convert SystemMessage to chat.Message")
+	case *TaskStartedMessage:
+		return chat.Message{}, fmt.Errorf("cannot convert TaskStartedMessage to chat.Message")
+	case *TaskProgressMessage:
+		return chat.Message{}, fmt.Errorf("cannot convert TaskProgressMessage to chat.Message")
+	case *TaskNotificationMessage:
+		return chat.Message{}, fmt.Errorf("cannot convert TaskNotificationMessage to chat.Message")
 	case *ResultMessage:
 		return chat.Message{}, fmt.Errorf("cannot convert ResultMessage to chat.Message")
 	case *StreamEvent:

@@ -50,6 +50,71 @@ type SystemMessage struct {
 
 func (SystemMessage) messageMarker() {}
 
+// TaskUsage represents usage statistics reported in task_progress and
+// task_notification messages.
+type TaskUsage struct {
+	TotalTokens int `json:"total_tokens"`
+	ToolUses    int `json:"tool_uses"`
+	DurationMS  int `json:"duration_ms"`
+}
+
+// TaskNotificationStatus represents the status of a completed task.
+type TaskNotificationStatus string
+
+const (
+	TaskNotificationStatusCompleted TaskNotificationStatus = "completed"
+	TaskNotificationStatusFailed    TaskNotificationStatus = "failed"
+	TaskNotificationStatusStopped   TaskNotificationStatus = "stopped"
+)
+
+// TaskStartedMessage is a system message emitted when a task starts.
+// It carries the same Subtype and Data fields as SystemMessage for
+// backward compatibility with code that inspects the raw payload.
+type TaskStartedMessage struct {
+	Subtype     string         `json:"subtype"`
+	Data        map[string]any `json:"data,omitzero"`
+	TaskID      string         `json:"task_id"`
+	Description string         `json:"description"`
+	UUID        string         `json:"uuid"`
+	SessionID   string         `json:"session_id"`
+	ToolUseID   *string        `json:"tool_use_id,omitzero"`
+	TaskType    *string        `json:"task_type,omitzero"`
+}
+
+func (TaskStartedMessage) messageMarker() {}
+
+// TaskProgressMessage is a system message emitted while a task is in progress.
+type TaskProgressMessage struct {
+	Subtype      string         `json:"subtype"`
+	Data         map[string]any `json:"data,omitzero"`
+	TaskID       string         `json:"task_id"`
+	Description  string         `json:"description"`
+	Usage        TaskUsage      `json:"usage"`
+	UUID         string         `json:"uuid"`
+	SessionID    string         `json:"session_id"`
+	ToolUseID    *string        `json:"tool_use_id,omitzero"`
+	LastToolName *string        `json:"last_tool_name,omitzero"`
+}
+
+func (TaskProgressMessage) messageMarker() {}
+
+// TaskNotificationMessage is a system message emitted when a task completes,
+// fails, or is stopped.
+type TaskNotificationMessage struct {
+	Subtype    string                 `json:"subtype"`
+	Data       map[string]any         `json:"data,omitzero"`
+	TaskID     string                 `json:"task_id"`
+	Status     TaskNotificationStatus `json:"status"`
+	OutputFile string                 `json:"output_file"`
+	Summary    string                 `json:"summary"`
+	UUID       string                 `json:"uuid"`
+	SessionID  string                 `json:"session_id"`
+	ToolUseID  *string                `json:"tool_use_id,omitzero"`
+	Usage      *TaskUsage             `json:"usage,omitzero"`
+}
+
+func (TaskNotificationMessage) messageMarker() {}
+
 // ResultMessage represents the final result of a conversation.
 type ResultMessage struct {
 	Subtype          string      `json:"subtype"`
@@ -220,24 +285,60 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 	}, nil
 }
 
-func parseSystemMessage(raw json.RawMessage) (*SystemMessage, error) {
-	var msg struct {
+func parseSystemMessage(raw json.RawMessage) (Message, error) {
+	var header struct {
 		Subtype string `json:"subtype"`
 	}
-	if err := json.Unmarshal(raw, &msg); err != nil {
+	if err := json.Unmarshal(raw, &header); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse system message: %v", err)}
 	}
 
-	// Store the entire raw message as data
+	// Store the entire raw message as data for all system message types.
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse system message data: %v", err)}
 	}
 
-	return &SystemMessage{
-		Subtype: msg.Subtype,
-		Data:    data,
-	}, nil
+	switch header.Subtype {
+	case "task_started":
+		return parseTaskStartedMessage(raw, data)
+	case "task_progress":
+		return parseTaskProgressMessage(raw, data)
+	case "task_notification":
+		return parseTaskNotificationMessage(raw, data)
+	default:
+		return &SystemMessage{
+			Subtype: header.Subtype,
+			Data:    data,
+		}, nil
+	}
+}
+
+func parseTaskStartedMessage(raw json.RawMessage, data map[string]any) (*TaskStartedMessage, error) {
+	var msg TaskStartedMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_started message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
+}
+
+func parseTaskProgressMessage(raw json.RawMessage, data map[string]any) (*TaskProgressMessage, error) {
+	var msg TaskProgressMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_progress message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
+}
+
+func parseTaskNotificationMessage(raw json.RawMessage, data map[string]any) (*TaskNotificationMessage, error) {
+	var msg TaskNotificationMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_notification message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
 }
 
 func parseResultMessage(raw json.RawMessage) (*ResultMessage, error) {

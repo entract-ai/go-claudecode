@@ -297,6 +297,212 @@ func TestParseSystemMessage(t *testing.T) {
 	assert.Equal(t, "processing", systemMsg.Data["status"])
 }
 
+func TestParseTaskStartedMessage(t *testing.T) {
+	input := `{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-abc",
+		"tool_use_id": "toolu_01",
+		"description": "Reticulating splines",
+		"task_type": "background",
+		"uuid": "uuid-1",
+		"session_id": "session-1"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	taskMsg, ok := msg.(*TaskStartedMessage)
+	require.True(t, ok, "expected *TaskStartedMessage, got %T", msg)
+
+	assert.Equal(t, "task-abc", taskMsg.TaskID)
+	assert.Equal(t, "Reticulating splines", taskMsg.Description)
+	assert.Equal(t, "uuid-1", taskMsg.UUID)
+	assert.Equal(t, "session-1", taskMsg.SessionID)
+	require.NotNil(t, taskMsg.ToolUseID)
+	assert.Equal(t, "toolu_01", *taskMsg.ToolUseID)
+	require.NotNil(t, taskMsg.TaskType)
+	assert.Equal(t, "background", *taskMsg.TaskType)
+
+	// Base fields should be populated
+	assert.Equal(t, "task_started", taskMsg.Subtype)
+	assert.NotNil(t, taskMsg.Data)
+	assert.Equal(t, "task-abc", taskMsg.Data["task_id"])
+}
+
+func TestParseTaskStartedMessage_OptionalFieldsAbsent(t *testing.T) {
+	input := `{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-abc",
+		"description": "Working",
+		"uuid": "uuid-1",
+		"session_id": "session-1"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	taskMsg, ok := msg.(*TaskStartedMessage)
+	require.True(t, ok, "expected *TaskStartedMessage, got %T", msg)
+
+	assert.Equal(t, "task-abc", taskMsg.TaskID)
+	assert.Equal(t, "Working", taskMsg.Description)
+	assert.Nil(t, taskMsg.ToolUseID)
+	assert.Nil(t, taskMsg.TaskType)
+}
+
+func TestParseTaskProgressMessage(t *testing.T) {
+	input := `{
+		"type": "system",
+		"subtype": "task_progress",
+		"task_id": "task-abc",
+		"tool_use_id": "toolu_01",
+		"description": "Halfway there",
+		"usage": {
+			"total_tokens": 1234,
+			"tool_uses": 5,
+			"duration_ms": 9876
+		},
+		"last_tool_name": "Read",
+		"uuid": "uuid-2",
+		"session_id": "session-1"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	taskMsg, ok := msg.(*TaskProgressMessage)
+	require.True(t, ok, "expected *TaskProgressMessage, got %T", msg)
+
+	assert.Equal(t, "task-abc", taskMsg.TaskID)
+	assert.Equal(t, "Halfway there", taskMsg.Description)
+	assert.Equal(t, 1234, taskMsg.Usage.TotalTokens)
+	assert.Equal(t, 5, taskMsg.Usage.ToolUses)
+	assert.Equal(t, 9876, taskMsg.Usage.DurationMS)
+	require.NotNil(t, taskMsg.LastToolName)
+	assert.Equal(t, "Read", *taskMsg.LastToolName)
+	require.NotNil(t, taskMsg.ToolUseID)
+	assert.Equal(t, "toolu_01", *taskMsg.ToolUseID)
+	assert.Equal(t, "uuid-2", taskMsg.UUID)
+	assert.Equal(t, "session-1", taskMsg.SessionID)
+
+	// Base fields
+	assert.Equal(t, "task_progress", taskMsg.Subtype)
+	assert.NotNil(t, taskMsg.Data)
+}
+
+func TestParseTaskNotificationMessage(t *testing.T) {
+	input := `{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "task-abc",
+		"tool_use_id": "toolu_01",
+		"status": "completed",
+		"output_file": "/tmp/out.md",
+		"summary": "All done",
+		"usage": {
+			"total_tokens": 2000,
+			"tool_uses": 7,
+			"duration_ms": 12345
+		},
+		"uuid": "uuid-3",
+		"session_id": "session-1"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	taskMsg, ok := msg.(*TaskNotificationMessage)
+	require.True(t, ok, "expected *TaskNotificationMessage, got %T", msg)
+
+	assert.Equal(t, "task-abc", taskMsg.TaskID)
+	assert.Equal(t, TaskNotificationStatus("completed"), taskMsg.Status)
+	assert.Equal(t, "/tmp/out.md", taskMsg.OutputFile)
+	assert.Equal(t, "All done", taskMsg.Summary)
+	require.NotNil(t, taskMsg.Usage)
+	assert.Equal(t, 2000, taskMsg.Usage.TotalTokens)
+	assert.Equal(t, 7, taskMsg.Usage.ToolUses)
+	assert.Equal(t, 12345, taskMsg.Usage.DurationMS)
+	require.NotNil(t, taskMsg.ToolUseID)
+	assert.Equal(t, "toolu_01", *taskMsg.ToolUseID)
+	assert.Equal(t, "uuid-3", taskMsg.UUID)
+	assert.Equal(t, "session-1", taskMsg.SessionID)
+
+	// Base fields
+	assert.Equal(t, "task_notification", taskMsg.Subtype)
+	assert.NotNil(t, taskMsg.Data)
+}
+
+func TestParseTaskNotificationMessage_OptionalFieldsAbsent(t *testing.T) {
+	input := `{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "task-abc",
+		"status": "failed",
+		"output_file": "/tmp/out.md",
+		"summary": "Boom",
+		"uuid": "uuid-3",
+		"session_id": "session-1"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	taskMsg, ok := msg.(*TaskNotificationMessage)
+	require.True(t, ok, "expected *TaskNotificationMessage, got %T", msg)
+
+	assert.Equal(t, TaskNotificationStatus("failed"), taskMsg.Status)
+	assert.Nil(t, taskMsg.Usage)
+	assert.Nil(t, taskMsg.ToolUseID)
+}
+
+func TestParseSystemMessage_UnknownSubtype_YieldsGenericSystemMessage(t *testing.T) {
+	// Unknown system subtypes should still produce a plain *SystemMessage,
+	// not one of the typed task message types.
+	input := `{
+		"type": "system",
+		"subtype": "some_future_subtype",
+		"foo": "bar"
+	}`
+
+	msg, err := parseMessage(json.RawMessage(input))
+	require.NoError(t, err)
+
+	// Should be *SystemMessage, not any of the task message types
+	systemMsg, ok := msg.(*SystemMessage)
+	require.True(t, ok, "expected *SystemMessage, got %T", msg)
+
+	assert.Equal(t, "some_future_subtype", systemMsg.Subtype)
+	assert.Equal(t, "bar", systemMsg.Data["foo"])
+}
+
+func TestParseTaskNotificationStatus_Values(t *testing.T) {
+	for _, status := range []TaskNotificationStatus{
+		TaskNotificationStatusCompleted,
+		TaskNotificationStatusFailed,
+		TaskNotificationStatusStopped,
+	} {
+		input := `{
+			"type": "system",
+			"subtype": "task_notification",
+			"task_id": "t1",
+			"status": "` + string(status) + `",
+			"output_file": "/o",
+			"summary": "s",
+			"uuid": "u1",
+			"session_id": "s1"
+		}`
+
+		msg, err := parseMessage(json.RawMessage(input))
+		require.NoError(t, err)
+
+		taskMsg, ok := msg.(*TaskNotificationMessage)
+		require.True(t, ok, "expected *TaskNotificationMessage, got %T", msg)
+		assert.Equal(t, status, taskMsg.Status)
+	}
+}
+
 func TestParseStreamEvent(t *testing.T) {
 	input := `{
 		"type": "stream_event",
