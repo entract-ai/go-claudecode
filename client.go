@@ -472,6 +472,12 @@ func (c *Client) Close(ctx context.Context) error {
 	c.closed = true
 	c.connected = false
 
+	// Wait for in-flight control request handlers (e.g. hook callbacks)
+	// to finish before closing the transport.
+	if c.router != nil {
+		c.router.WaitInflight()
+	}
+
 	if c.transport != nil {
 		return c.transport.Close(ctx)
 	}

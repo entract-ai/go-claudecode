@@ -168,6 +168,12 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 					case <-ctx.Done():
 						// Context cancelled
 					}
+
+					// Wait for in-flight control request handlers to
+					// complete before closing stdin. This ensures MCP
+					// init responses and hook responses are written
+					// while the transport is still accepting writes.
+					router.WaitInflight()
 				}
 
 				transport.EndInput(ctx)
@@ -198,6 +204,10 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 		for msg := range routedCh {
 			ch <- msg
 		}
+
+		// Wait for in-flight control request handlers (e.g. hook callbacks)
+		// to finish before closing the transport.
+		router.WaitInflight()
 
 		// Wait for input streaming to complete
 		wg.Wait()

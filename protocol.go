@@ -37,6 +37,13 @@ type ControlRouter struct {
 	// MCP server registry for SDK servers
 	sdkMCPServers map[string]*MCPSDKConfig
 
+	// In-flight control request handlers, keyed by request_id.
+	// Each entry holds a cancel function that, when called, cancels the
+	// handler's context. Used by control_cancel_request to stop handlers
+	// that the CLI has abandoned.
+	inflightRequests map[string]context.CancelFunc
+	inflightWg       sync.WaitGroup
+
 	// Initialization state
 	initialized          bool
 	initializationResult map[string]any
@@ -55,6 +62,7 @@ func NewControlRouter(transport Transport, opts *Options) *ControlRouter {
 		pendingResponses: make(map[string]chan controlResult),
 		hookCallbacks:    make(map[string]HookCallback),
 		sdkMCPServers:    opts.sdkMCPServers,
+		inflightRequests: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -148,12 +156,61 @@ func (r *ControlRouter) HandleMessage(ctx context.Context, msg Message, raw []by
 	case *ControlResponse:
 		return true, r.handleControlResponse(m, raw)
 	case *ControlRequest:
-		return true, r.handleControlRequest(ctx, m, raw)
+		r.spawnControlRequestHandler(ctx, m, raw)
+		return true, nil
 	case *ControlCancelRequest:
-		// Ignore cancel requests like Python does (cancellation not yet implemented)
+		r.cancelInflightRequest(m.RequestID)
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+// spawnControlRequestHandler runs handleControlRequest in a goroutine with a
+// cancellable context, tracking the request for potential cancellation.
+func (r *ControlRouter) spawnControlRequestHandler(ctx context.Context, msg *ControlRequest, raw []byte) {
+	reqID := msg.RequestID
+	reqCtx, cancel := context.WithCancel(ctx)
+
+	r.mu.Lock()
+	r.inflightRequests[reqID] = cancel
+	r.mu.Unlock()
+
+	r.inflightWg.Add(1)
+	go func() {
+		defer r.inflightWg.Done()
+		defer func() {
+			r.mu.Lock()
+			delete(r.inflightRequests, reqID)
+			r.mu.Unlock()
+			cancel()
+		}()
+		// handleControlRequest writes the response internally; errors
+		// from it are protocol-level (e.g. bad JSON) and not recoverable.
+		_ = r.handleControlRequest(reqCtx, msg, raw)
+	}()
+}
+
+// WaitInflight blocks until all in-flight control request handler goroutines
+// have returned. Call this during shutdown after the message loop has ended
+// to ensure handler goroutines (especially hook callbacks) have completed or
+// been cancelled.
+func (r *ControlRouter) WaitInflight() {
+	r.inflightWg.Wait()
+}
+
+// cancelInflightRequest cancels the handler for the given request_id, if any.
+// Unknown request_ids are silently ignored.
+func (r *ControlRouter) cancelInflightRequest(reqID string) {
+	r.mu.Lock()
+	cancel, ok := r.inflightRequests[reqID]
+	if ok {
+		delete(r.inflightRequests, reqID)
+	}
+	r.mu.Unlock()
+
+	if ok {
+		cancel()
 	}
 }
 
@@ -207,6 +264,12 @@ func (r *ControlRouter) handleControlRequest(ctx context.Context, msg *ControlRe
 		responseData, responseErr = r.handleMCPMessage(ctx, raw)
 	default:
 		responseErr = fmt.Errorf("unsupported control request subtype: %s", request.Request.Subtype)
+	}
+
+	// If the context was cancelled (via control_cancel_request), the CLI
+	// has already abandoned this request. Don't write a response.
+	if ctx.Err() != nil {
+		return nil
 	}
 
 	return r.sendControlResponse(ctx, request.RequestID, responseData, responseErr)

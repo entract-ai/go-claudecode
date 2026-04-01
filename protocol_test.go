@@ -252,7 +252,7 @@ func TestControlRouter_HandleMessage_NonControlPassthrough(t *testing.T) {
 
 func TestControlRouter_HandleMessage_UnknownControlSubtype(t *testing.T) {
 	// When the CLI sends a control request with an unknown subtype,
-	// HandleMessage should return an error response (not panic or ignore).
+	// HandleMessage should spawn a handler that writes an error response.
 	transport := &writeCapturingTransport{}
 	opts := &Options{}
 	router := NewControlRouter(transport, opts)
@@ -272,27 +272,177 @@ func TestControlRouter_HandleMessage_UnknownControlSubtype(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, handled, "control request should always be handled")
 
-	// The router should send an error response back to the transport
+	// Wait for the handler goroutine to complete
+	router.WaitInflight()
+
+	// The router should have sent an error response back to the transport
+	transport.mu.Lock()
 	written := transport.lastWritten
+	transport.mu.Unlock()
 	assert.Contains(t, written, "control_response")
 	assert.Contains(t, written, "error")
 	assert.Contains(t, written, "unsupported control request subtype")
 }
 
 func TestControlRouter_HandleMessage_ControlCancelRequest(t *testing.T) {
-	// ControlCancelRequest should be handled (swallowed) without error.
+	// ControlCancelRequest for an unknown request_id should be handled as a no-op
+	// (no panic, no error).
 	opts := &Options{}
 	router := NewControlRouter(nil, opts)
 	ctx := context.Background()
 
 	msg := &ControlCancelRequest{
 		Type:      "control_cancel_request",
-		RequestID: "req_42",
+		RequestID: "nonexistent",
 	}
 
 	handled, err := router.HandleMessage(ctx, msg, nil)
 	require.NoError(t, err)
 	assert.True(t, handled, "cancel requests should be handled")
+}
+
+func TestControlRouter_CancelRequest_CancelsInflightHook(t *testing.T) {
+	// When a control_cancel_request arrives for an in-flight hook_callback,
+	// the handler's context should be cancelled, the hook should stop, and
+	// no response should be written for the cancelled request.
+	transport := &allWritesCapturingTransport{}
+	hookStarted := make(chan struct{})
+	hookCancelled := make(chan struct{})
+
+	opts := &Options{}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	// Register a slow hook callback that signals when it starts and when cancelled
+	router.mu.Lock()
+	router.hookCallbacks["hook_0"] = func(ctx context.Context, input HookInput, toolUseID *string) (HookOutput, error) {
+		close(hookStarted)
+		// Block until context is cancelled
+		<-ctx.Done()
+		close(hookCancelled)
+		return HookOutput{}, ctx.Err()
+	}
+	router.mu.Unlock()
+
+	// Send a control_request with hook_callback subtype
+	controlReqMsg := &ControlRequest{
+		Type:      "control_request",
+		RequestID: "hook_1",
+	}
+	controlReqRaw := []byte(`{
+		"type": "control_request",
+		"request_id": "hook_1",
+		"request": {
+			"subtype": "hook_callback",
+			"callback_id": "hook_0",
+			"input": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}}
+		}
+	}`)
+
+	handled, err := router.HandleMessage(ctx, controlReqMsg, controlReqRaw)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// Wait for the hook to start executing
+	select {
+	case <-hookStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook did not start in time")
+	}
+
+	// Now send a cancel request for that hook
+	cancelMsg := &ControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: "hook_1",
+	}
+	handled, err = router.HandleMessage(ctx, cancelMsg, nil)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// The hook should be cancelled
+	select {
+	case <-hookCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook was not cancelled in time")
+	}
+
+	// Wait for the handler goroutine to finish
+	router.WaitInflight()
+
+	// No response should have been written for the cancelled request
+	written := transport.allWritten()
+	for _, w := range written {
+		assert.NotContains(t, w, "hook_1",
+			"cancelled request should not produce a response, but got: %s", w)
+	}
+
+	// The request should be removed from inflight tracking
+	router.mu.Lock()
+	_, stillTracked := router.inflightRequests["hook_1"]
+	router.mu.Unlock()
+	assert.False(t, stillTracked, "cancelled request should be removed from inflight tracking")
+}
+
+func TestControlRouter_CompletedRequestRemovedFromInflight(t *testing.T) {
+	// Once a control_request handler completes normally, it should be removed
+	// from inflightRequests so a late cancel is a harmless no-op.
+	transport := &allWritesCapturingTransport{}
+	hookDone := make(chan struct{})
+
+	opts := &Options{}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	// Register a fast hook callback
+	router.mu.Lock()
+	router.hookCallbacks["hook_0"] = func(ctx context.Context, input HookInput, toolUseID *string) (HookOutput, error) {
+		defer close(hookDone)
+		return HookOutput{}, nil
+	}
+	router.mu.Unlock()
+
+	controlReqMsg := &ControlRequest{
+		Type:      "control_request",
+		RequestID: "fast_1",
+	}
+	controlReqRaw := []byte(`{
+		"type": "control_request",
+		"request_id": "fast_1",
+		"request": {
+			"subtype": "hook_callback",
+			"callback_id": "hook_0",
+			"input": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}}
+		}
+	}`)
+
+	handled, err := router.HandleMessage(ctx, controlReqMsg, controlReqRaw)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// Wait for the hook to complete
+	select {
+	case <-hookDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook did not complete in time")
+	}
+
+	// Wait for the handler goroutine to finish cleanup
+	router.WaitInflight()
+
+	// The request should have been removed from inflight tracking
+	router.mu.Lock()
+	_, stillTracked := router.inflightRequests["fast_1"]
+	router.mu.Unlock()
+	assert.False(t, stillTracked, "completed request should be removed from inflight tracking")
+
+	// A late cancel should be a no-op
+	cancelMsg := &ControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: "fast_1",
+	}
+	handled, err = router.HandleMessage(ctx, cancelMsg, nil)
+	require.NoError(t, err)
+	assert.True(t, handled)
 }
 
 func TestControlRouter_ConcurrentRequests(t *testing.T) {
@@ -341,12 +491,39 @@ func TestControlRouter_ConcurrentRequests(t *testing.T) {
 	}
 
 	wg.Wait()
+	router.WaitInflight()
 }
 
 // writeCapturingTransport captures the last written data for assertions.
 type writeCapturingTransport struct {
 	mu          sync.Mutex
 	lastWritten string
+}
+
+// allWritesCapturingTransport captures all written data for assertions.
+type allWritesCapturingTransport struct {
+	mu      sync.Mutex
+	written []string
+}
+
+func (w *allWritesCapturingTransport) Connect(ctx context.Context) error                     { return nil }
+func (w *allWritesCapturingTransport) ReadMessages(ctx context.Context) <-chan MessageOrError { return nil }
+func (w *allWritesCapturingTransport) Write(ctx context.Context, data string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.written = append(w.written, data)
+	return nil
+}
+func (w *allWritesCapturingTransport) EndInput(ctx context.Context) error { return nil }
+func (w *allWritesCapturingTransport) Close(ctx context.Context) error    { return nil }
+func (w *allWritesCapturingTransport) IsReady() bool                      { return true }
+
+func (w *allWritesCapturingTransport) allWritten() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	result := make([]string, len(w.written))
+	copy(result, w.written)
+	return result
 }
 
 func (w *writeCapturingTransport) Connect(ctx context.Context) error                      { return nil }

@@ -354,6 +354,8 @@ func runQueryWithMockTransport(
 				case <-readerDone:
 				case <-ctx.Done():
 				}
+
+				router.WaitInflight()
 			}
 
 			transport.EndInput(ctx)
@@ -386,6 +388,10 @@ func runQueryWithMockTransport(
 		}
 		messages = append(messages, msg.Message)
 	}
+
+	// Wait for in-flight control request handlers to complete, matching
+	// the production QueryWithInput flow.
+	router.WaitInflight()
 
 	wg.Wait()
 	transport.Close(ctx)
@@ -758,6 +764,8 @@ func TestStringPromptStdinLifecycle(t *testing.T) {
 					case <-readerDone:
 					case <-ctx.Done():
 					}
+
+					router.WaitInflight()
 				}
 
 				transport.EndInput(ctx)
