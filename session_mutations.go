@@ -1,12 +1,16 @@
 package claudecode
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
@@ -75,6 +79,434 @@ func TagSession(sessionID string, tag *string, opts ...SessionOption) error {
 
 	o := applySessionOptions(opts...)
 	return appendToSession(sessionID, data, o)
+}
+
+// DeleteSession deletes a session by removing its JSONL file.
+//
+// This is a hard delete -- the file is removed permanently. SDK users who
+// need soft-delete semantics can use TagSession(id, "__hidden") and filter
+// on listing instead.
+//
+// Returns an error if sessionID is not a valid UUID or if the session file
+// cannot be found.
+//
+// When a directory is provided via WithSessionDirectory, searches that
+// project dir (and worktree fallback). When omitted, searches all project
+// directories.
+func DeleteSession(sessionID string, opts ...SessionOption) error {
+	if !validateUUID(sessionID) {
+		return fmt.Errorf("invalid session ID: %s", sessionID)
+	}
+
+	o := applySessionOptions(opts...)
+	configDir := getClaudeConfigDir(o.configDir)
+
+	path := findSessionFile(sessionID, configDir, o.directory)
+	if path == "" {
+		if o.directory != "" {
+			return fmt.Errorf("session %s not found in project directory for %s", sessionID, o.directory)
+		}
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("session %s not found", sessionID)
+		}
+		return err
+	}
+	return nil
+}
+
+// findSessionFile finds the path to a session's JSONL file.
+// Returns the file path if found, empty string otherwise.
+func findSessionFile(sessionID, configDir, directory string) string {
+	result, _ := findSessionFileWithDir(sessionID, configDir, directory)
+	return result
+}
+
+// findSessionFileWithDir finds a session file and its containing project
+// directory. Returns (filePath, projectDir) or ("", "") if not found. The
+// fork operation needs the project dir to write the new file adjacent to
+// the source.
+func findSessionFileWithDir(sessionID, configDir, directory string) (string, string) {
+	fileName := sessionID + ".jsonl"
+
+	tryDir := func(projectDir string) (string, string) {
+		path := filepath.Join(projectDir, fileName)
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", ""
+		}
+		if info.Size() > 0 {
+			return path, projectDir
+		}
+		return "", ""
+	}
+
+	if directory != "" {
+		canonical := canonicalizePath(directory)
+		projDir := findProjectDir(configDir, canonical)
+		if projDir != "" {
+			if path, dir := tryDir(projDir); path != "" {
+				return path, dir
+			}
+		}
+
+		worktreePaths := getWorktreePaths(canonical)
+		for _, wt := range worktreePaths {
+			if wt == canonical {
+				continue
+			}
+			wtProjDir := findProjectDir(configDir, wt)
+			if wtProjDir != "" {
+				if path, dir := tryDir(wtProjDir); path != "" {
+					return path, dir
+				}
+			}
+		}
+		return "", ""
+	}
+
+	projectsDir := getProjectsDir(configDir)
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return "", ""
+	}
+	for _, entry := range entries {
+		if path, dir := tryDir(filepath.Join(projectsDir, entry.Name())); path != "" {
+			return path, dir
+		}
+	}
+	return "", ""
+}
+
+// ---------------------------------------------------------------------------
+// ForkSession
+// ---------------------------------------------------------------------------
+
+// ForkSessionResult contains the result of a fork operation.
+type ForkSessionResult struct {
+	// SessionID is the UUID of the new forked session.
+	SessionID string
+}
+
+// ForkSession forks a session into a new branch with fresh UUIDs.
+//
+// Copies transcript messages from the source session into a new session file,
+// remapping every message UUID and preserving the parentUuid chain. Supports
+// slicing at a specific message via WithForkUpToMessageID.
+//
+// Forked sessions start without undo history (file-history snapshots are not
+// copied).
+//
+// Returns an error if sessionID is not a valid UUID, if the source session
+// file cannot be found, if the session has no messages to fork, or if
+// upToMessageID is not found in the transcript.
+func ForkSession(sessionID string, opts ...SessionOption) (*ForkSessionResult, error) {
+	if !validateUUID(sessionID) {
+		return nil, fmt.Errorf("invalid session ID: %s", sessionID)
+	}
+
+	o := applySessionOptions(opts...)
+	if o.upToMessageID != "" && !validateUUID(o.upToMessageID) {
+		return nil, fmt.Errorf("invalid up_to_message_id: %s", o.upToMessageID)
+	}
+
+	configDir := getClaudeConfigDir(o.configDir)
+	filePath, projectDir := findSessionFileWithDir(sessionID, configDir, o.directory)
+	if filePath == "" {
+		if o.directory != "" {
+			return nil, fmt.Errorf("session %s not found in project directory for %s", sessionID, o.directory)
+		}
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(content) == 0 {
+		return nil, fmt.Errorf("session %s has no messages to fork", sessionID)
+	}
+
+	transcript, contentReplacements := parseForkTranscript(content, sessionID)
+
+	// Filter out sidechains (subagent sessions with separate parentUuid
+	// graphs). Keep isMeta entries -- they're interleaved in the main chain.
+	filtered := transcript[:0]
+	for _, e := range transcript {
+		if isSidechain, _ := e["isSidechain"].(bool); !isSidechain {
+			filtered = append(filtered, e)
+		}
+	}
+	transcript = filtered
+
+	if len(transcript) == 0 {
+		return nil, fmt.Errorf("session %s has no messages to fork", sessionID)
+	}
+
+	if o.upToMessageID != "" {
+		cutoff := -1
+		for i, entry := range transcript {
+			if uid, _ := entry["uuid"].(string); uid == o.upToMessageID {
+				cutoff = i
+				break
+			}
+		}
+		if cutoff == -1 {
+			return nil, fmt.Errorf("message %s not found in session %s", o.upToMessageID, sessionID)
+		}
+		transcript = transcript[:cutoff+1]
+	}
+
+	// Build UUID mapping. Include progress entries -- needed for parentUuid
+	// chain walk.
+	uuidMapping := make(map[string]string, len(transcript))
+	for _, entry := range transcript {
+		oldUUID, _ := entry["uuid"].(string)
+		uuidMapping[oldUUID] = newUUID()
+	}
+
+	// Filter out progress messages from written output. They're UI-only
+	// chain links; not needed in a fresh fork.
+	var writable []map[string]any
+	for _, e := range transcript {
+		if entryType, _ := e["type"].(string); entryType != "progress" {
+			writable = append(writable, e)
+		}
+	}
+	if len(writable) == 0 {
+		return nil, fmt.Errorf("session %s has no messages to fork", sessionID)
+	}
+
+	// Build by-UUID index for parent chain walking.
+	byUUID := make(map[string]map[string]any, len(transcript))
+	for _, entry := range transcript {
+		uid, _ := entry["uuid"].(string)
+		byUUID[uid] = entry
+	}
+
+	forkedSessionID := newUUID()
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Replace +00:00 with Z if present (Go outputs Z for UTC already,
+	// but be explicit).
+	now = strings.Replace(now, "+00:00", "Z", 1)
+
+	var lines []string
+
+	for i, original := range writable {
+		origUUID, _ := original["uuid"].(string)
+		newEntryUUID := uuidMapping[origUUID]
+
+		// Resolve parentUuid, skipping progress ancestors.
+		var newParentUUID *string
+		parentID, _ := original["parentUuid"].(string)
+		for parentID != "" {
+			parent, ok := byUUID[parentID]
+			if !ok {
+				break
+			}
+			if parentType, _ := parent["type"].(string); parentType != "progress" {
+				if mapped, ok := uuidMapping[parentID]; ok {
+					newParentUUID = &mapped
+				}
+				break
+			}
+			parentID, _ = parent["parentUuid"].(string)
+		}
+
+		// Only update timestamp on the last message (leaf detection on resume).
+		timestamp := now
+		if i != len(writable)-1 {
+			if ts, ok := original["timestamp"].(string); ok {
+				timestamp = ts
+			}
+		}
+
+		// Remap logicalParentUuid (compact-boundary backpointer).
+		// If the referenced UUID was sliced off (not in uuidMapping),
+		// set to nil to avoid leaving a stale reference.
+		var newLogicalParent any
+		if logicalParent, ok := original["logicalParentUuid"].(string); ok && logicalParent != "" {
+			if mapped, ok := uuidMapping[logicalParent]; ok {
+				newLogicalParent = mapped
+			}
+		}
+
+		forked := make(map[string]any, len(original)+6)
+		for k, v := range original {
+			forked[k] = v
+		}
+		forked["uuid"] = newEntryUUID
+		if newParentUUID != nil {
+			forked["parentUuid"] = *newParentUUID
+		} else {
+			forked["parentUuid"] = nil
+		}
+		if _, hasLogicalParent := original["logicalParentUuid"]; hasLogicalParent {
+			forked["logicalParentUuid"] = newLogicalParent
+		}
+		forked["sessionId"] = forkedSessionID
+		forked["timestamp"] = timestamp
+		forked["isSidechain"] = false
+		forked["forkedFrom"] = map[string]any{
+			"sessionId":   sessionID,
+			"messageUuid": origUUID,
+		}
+
+		// Remove fields that would leak state from the source session.
+		for _, key := range []string{"teamName", "agentName", "slug", "sourceToolAssistantUUID"} {
+			delete(forked, key)
+		}
+
+		b, err := json.Marshal(forked)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal forked entry: %w", err)
+		}
+		lines = append(lines, string(b))
+	}
+
+	// Append content-replacement entry (if any) with the fork's sessionId.
+	if len(contentReplacements) > 0 {
+		crEntry := map[string]any{
+			"type":         "content-replacement",
+			"sessionId":    forkedSessionID,
+			"replacements": contentReplacements,
+		}
+		b, err := json.Marshal(crEntry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal content-replacement: %w", err)
+		}
+		lines = append(lines, string(b))
+	}
+
+	// Derive title: explicit > original customTitle/aiTitle > first prompt.
+	forkTitle := strings.TrimSpace(o.forkTitle)
+	if forkTitle == "" {
+		contentStr := string(content)
+		bufLen := len(contentStr)
+		headEnd := bufLen
+		if headEnd > liteReadBufSize {
+			headEnd = liteReadBufSize
+		}
+		head := contentStr[:headEnd]
+
+		tailStart := bufLen - liteReadBufSize
+		if tailStart < 0 {
+			tailStart = 0
+		}
+		tail := contentStr[tailStart:]
+
+		base := ""
+		if v, ok := extractLastJSONStringField(tail, "customTitle"); ok && v != "" {
+			base = v
+		} else if v, ok := extractLastJSONStringField(head, "customTitle"); ok && v != "" {
+			base = v
+		} else if v, ok := extractLastJSONStringField(tail, "aiTitle"); ok && v != "" {
+			base = v
+		} else if v, ok := extractLastJSONStringField(head, "aiTitle"); ok && v != "" {
+			base = v
+		} else if fp := extractFirstPromptFromHead(head); fp != "" {
+			base = fp
+		} else {
+			base = "Forked session"
+		}
+		forkTitle = base + " (fork)"
+	}
+
+	titleEntry := map[string]any{
+		"type":        "custom-title",
+		"sessionId":   forkedSessionID,
+		"customTitle": forkTitle,
+	}
+	b, err := json.Marshal(titleEntry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal title entry: %w", err)
+	}
+	lines = append(lines, string(b))
+
+	// Write the new session file atomically using O_EXCL to prevent
+	// overwriting an existing file.
+	forkPath := filepath.Join(projectDir, forkedSessionID+".jsonl")
+	fd, err := syscall.Open(forkPath, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fork file: %w", err)
+	}
+	defer syscall.Close(fd)
+
+	data := []byte(strings.Join(lines, "\n") + "\n")
+	if _, err := syscall.Write(fd, data); err != nil {
+		return nil, fmt.Errorf("failed to write fork file: %w", err)
+	}
+
+	return &ForkSessionResult{SessionID: forkedSessionID}, nil
+}
+
+// Transcript entry types that carry uuid + parentUuid chain links in fork parsing.
+var forkTranscriptTypes = map[string]bool{
+	"user": true, "assistant": true, "progress": true,
+	"system": true, "attachment": true,
+}
+
+// parseForkTranscript parses JSONL content into transcript entries and
+// content-replacement records. Only keeps entries that have a uuid and are
+// transcript message types. Content-replacement entries are collected for
+// re-emission in the fork.
+func parseForkTranscript(content []byte, sessionID string) ([]map[string]any, []any) {
+	var transcript []map[string]any
+	var contentReplacements []any
+
+	start := 0
+	length := len(content)
+	for start < length {
+		end := bytes.IndexByte(content[start:], '\n')
+		var lineBytes []byte
+		if end == -1 {
+			lineBytes = bytes.TrimSpace(content[start:])
+			start = length
+		} else {
+			lineBytes = bytes.TrimSpace(content[start : start+end])
+			start = start + end + 1
+		}
+		if len(lineBytes) == 0 {
+			continue
+		}
+
+		var entry map[string]any
+		if err := json.Unmarshal(lineBytes, &entry); err != nil {
+			continue
+		}
+
+		entryType, _ := entry["type"].(string)
+		uid, hasUUID := entry["uuid"].(string)
+
+		if forkTranscriptTypes[entryType] && hasUUID && uid != "" {
+			transcript = append(transcript, entry)
+		} else if entryType == "content-replacement" {
+			entrySID, _ := entry["sessionId"].(string)
+			if entrySID == sessionID {
+				if replacements, ok := entry["replacements"].([]any); ok {
+					contentReplacements = append(contentReplacements, replacements...)
+				}
+			}
+		}
+	}
+
+	return transcript, contentReplacements
+}
+
+// newUUID generates a new random UUID v4 string.
+func newUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("failed to generate UUID: " + err.Error())
+	}
+	// Set version 4 and variant bits per RFC 4122.
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // sanitizeUnicode removes dangerous Unicode characters from a string.

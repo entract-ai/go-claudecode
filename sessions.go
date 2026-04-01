@@ -82,13 +82,17 @@ type SessionMessage struct {
 // Options
 // ---------------------------------------------------------------------------
 
-// sessionOptions holds configuration for session listing/reading functions.
+// sessionOptions holds configuration for session listing/reading/mutation functions.
 type sessionOptions struct {
 	directory        string
-	limit            int  // 0 = no limit
+	limit            int    // 0 = no limit
 	offset           int
-	includeWorktrees *bool // nil = default (true for list, n/a for messages)
+	includeWorktrees *bool  // nil = default (true for list, n/a for messages)
 	configDir        string // test override
+
+	// Fork-specific options
+	upToMessageID string
+	forkTitle     string
 }
 
 // SessionOption configures ListSessions or GetSessionMessages.
@@ -122,6 +126,22 @@ func WithSessionOffset(n int) SessionOption {
 func WithIncludeWorktrees(include bool) SessionOption {
 	return func(o *sessionOptions) {
 		o.includeWorktrees = &include
+	}
+}
+
+// WithForkUpToMessageID slices the fork transcript up to (and including)
+// the specified message UUID. If omitted, copies the full transcript.
+func WithForkUpToMessageID(messageID string) SessionOption {
+	return func(o *sessionOptions) {
+		o.upToMessageID = messageID
+	}
+}
+
+// WithForkTitle sets a custom title for the forked session. If omitted,
+// derives the title from the original session title + " (fork)".
+func WithForkTitle(title string) SessionOption {
+	return func(o *sessionOptions) {
+		o.forkTitle = title
 	}
 }
 
