@@ -1,9 +1,11 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHookOutput_Builders(t *testing.T) {
@@ -113,6 +115,30 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "Bash", preToolUse.ToolName)
 		assert.Equal(t, "ls", preToolUse.ToolInput["command"])
 		assert.Equal(t, "tu_123", preToolUse.ToolUseID)
+		assert.Nil(t, preToolUse.AgentID, "AgentID should be nil when absent")
+		assert.Nil(t, preToolUse.AgentType, "AgentType should be nil when absent")
+	})
+
+	t.Run("PreToolUse with agent_id and agent_type", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name": "PreToolUse",
+			"session_id":      "sess_123",
+			"transcript_path": "/path/to/transcript",
+			"cwd":             "/home/user",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]any{"command": "echo hello"},
+			"tool_use_id":     "toolu_abc123",
+			"agent_id":        "agent-42",
+			"agent_type":      "researcher",
+		}
+
+		result := parseHookInput(input)
+		preToolUse, ok := result.(PreToolUseInput)
+		require.True(t, ok)
+		require.NotNil(t, preToolUse.AgentID)
+		assert.Equal(t, "agent-42", *preToolUse.AgentID)
+		require.NotNil(t, preToolUse.AgentType)
+		assert.Equal(t, "researcher", *preToolUse.AgentType)
 	})
 
 	t.Run("PostToolUse", func(t *testing.T) {
@@ -134,6 +160,29 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "Bash", postToolUse.ToolName)
 		assert.Equal(t, "file1.txt\nfile2.txt", postToolUse.ToolResponse)
 		assert.Equal(t, "tu_456", postToolUse.ToolUseID)
+		assert.Nil(t, postToolUse.AgentID, "AgentID should be nil when absent")
+		assert.Nil(t, postToolUse.AgentType, "AgentType should be nil when absent")
+	})
+
+	t.Run("PostToolUse with agent_id", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name": "PostToolUse",
+			"session_id":      "sess_123",
+			"transcript_path": "/path/to/transcript",
+			"cwd":             "/home/user",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]any{"command": "echo hello"},
+			"tool_response":   map[string]any{"content": []any{map[string]any{"type": "text", "text": "hello"}}},
+			"tool_use_id":     "toolu_abc123",
+			"agent_id":        "agent-42",
+		}
+
+		result := parseHookInput(input)
+		postToolUse, ok := result.(PostToolUseInput)
+		require.True(t, ok)
+		require.NotNil(t, postToolUse.AgentID)
+		assert.Equal(t, "agent-42", *postToolUse.AgentID)
+		assert.Nil(t, postToolUse.AgentType, "AgentType should be nil when only agent_id is present")
 	})
 
 	t.Run("UserPromptSubmit", func(t *testing.T) {
@@ -189,6 +238,32 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "tu_456", failure.ToolUseID)
 		assert.Equal(t, "permission denied", failure.Error)
 		assert.True(t, failure.IsInterrupt)
+		assert.Nil(t, failure.AgentID, "AgentID should be nil when absent")
+		assert.Nil(t, failure.AgentType, "AgentType should be nil when absent")
+	})
+
+	t.Run("PostToolUseFailure with agent_id and agent_type", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name": "PostToolUseFailure",
+			"session_id":      "sess_123",
+			"transcript_path": "/path/to/transcript",
+			"cwd":             "/home/user",
+			"tool_name":       "Bash",
+			"tool_input":      map[string]any{"command": "rm -rf /"},
+			"tool_use_id":     "tu_789",
+			"error":           "permission denied",
+			"is_interrupt":    false,
+			"agent_id":        "agent-99",
+			"agent_type":      "code-reviewer",
+		}
+
+		result := parseHookInput(input)
+		failure, ok := result.(PostToolUseFailureInput)
+		require.True(t, ok)
+		require.NotNil(t, failure.AgentID)
+		assert.Equal(t, "agent-99", *failure.AgentID)
+		require.NotNil(t, failure.AgentType)
+		assert.Equal(t, "code-reviewer", *failure.AgentType)
 	})
 
 	t.Run("Notification", func(t *testing.T) {
@@ -269,6 +344,30 @@ func TestParseHookInput(t *testing.T) {
 		assert.Equal(t, "Write", permReq.ToolName)
 		assert.Equal(t, "/etc/passwd", permReq.ToolInput["path"])
 		assert.Equal(t, []any{"allow"}, permReq.PermissionSuggestions)
+		assert.Nil(t, permReq.AgentID, "AgentID should be nil when absent")
+		assert.Nil(t, permReq.AgentType, "AgentType should be nil when absent")
+	})
+
+	t.Run("PermissionRequest with agent_id and agent_type", func(t *testing.T) {
+		input := map[string]any{
+			"hook_event_name":        "PermissionRequest",
+			"session_id":             "sess_123",
+			"transcript_path":        "/path/to/transcript",
+			"cwd":                    "/home/user",
+			"tool_name":              "Write",
+			"tool_input":             map[string]any{"path": "/tmp/out.txt"},
+			"permission_suggestions": []any{},
+			"agent_id":               "agent-77",
+			"agent_type":             "general-purpose",
+		}
+
+		result := parseHookInput(input)
+		permReq, ok := result.(PermissionRequestInput)
+		require.True(t, ok)
+		require.NotNil(t, permReq.AgentID)
+		assert.Equal(t, "agent-77", *permReq.AgentID)
+		require.NotNil(t, permReq.AgentType)
+		assert.Equal(t, "general-purpose", *permReq.AgentType)
 	})
 
 	t.Run("PreCompact", func(t *testing.T) {
@@ -299,5 +398,92 @@ func TestParseHookInput(t *testing.T) {
 		base, ok := result.(BaseHookInput)
 		assert.True(t, ok)
 		assert.Equal(t, "Unknown", base.HookEventName)
+	})
+}
+
+func TestHookInputAgentFields_JSONRoundTrip(t *testing.T) {
+	agentID := "agent-42"
+	agentType := "researcher"
+
+	t.Run("PreToolUseInput with agent fields serializes correctly", func(t *testing.T) {
+		input := PreToolUseInput{
+			BaseHookInput: BaseHookInput{
+				HookEventName: "PreToolUse",
+				SessionID:     "sess_1",
+			},
+			ToolName:  "Bash",
+			ToolInput: map[string]any{"command": "ls"},
+			ToolUseID: "tu_1",
+			AgentID:   &agentID,
+			AgentType: &agentType,
+		}
+
+		data, err := json.Marshal(input)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+		assert.Equal(t, "agent-42", m["agent_id"])
+		assert.Equal(t, "researcher", m["agent_type"])
+	})
+
+	t.Run("PreToolUseInput without agent fields omits them in JSON", func(t *testing.T) {
+		input := PreToolUseInput{
+			BaseHookInput: BaseHookInput{
+				HookEventName: "PreToolUse",
+				SessionID:     "sess_1",
+			},
+			ToolName:  "Bash",
+			ToolInput: map[string]any{"command": "ls"},
+			ToolUseID: "tu_1",
+		}
+
+		data, err := json.Marshal(input)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+		_, hasAgentID := m["agent_id"]
+		_, hasAgentType := m["agent_type"]
+		assert.False(t, hasAgentID, "agent_id should be omitted when nil")
+		assert.False(t, hasAgentType, "agent_type should be omitted when nil")
+	})
+
+	t.Run("JSON deserialization into PreToolUseInput", func(t *testing.T) {
+		jsonData := `{
+			"hook_event_name": "PreToolUse",
+			"session_id": "sess_1",
+			"transcript_path": "/tmp/t",
+			"cwd": "/home/user",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_use_id": "tu_1",
+			"agent_id": "agent-42",
+			"agent_type": "researcher"
+		}`
+
+		var input PreToolUseInput
+		require.NoError(t, json.Unmarshal([]byte(jsonData), &input))
+		require.NotNil(t, input.AgentID)
+		assert.Equal(t, "agent-42", *input.AgentID)
+		require.NotNil(t, input.AgentType)
+		assert.Equal(t, "researcher", *input.AgentType)
+	})
+
+	t.Run("JSON deserialization without agent fields", func(t *testing.T) {
+		jsonData := `{
+			"hook_event_name": "PreToolUse",
+			"session_id": "sess_1",
+			"transcript_path": "/tmp/t",
+			"cwd": "/home/user",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_use_id": "tu_1"
+		}`
+
+		var input PreToolUseInput
+		require.NoError(t, json.Unmarshal([]byte(jsonData), &input))
+		assert.Nil(t, input.AgentID, "AgentID should be nil when not in JSON")
+		assert.Nil(t, input.AgentType, "AgentType should be nil when not in JSON")
 	})
 }

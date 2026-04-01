@@ -358,6 +358,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolName:      getString(input, "tool_name"),
 			ToolInput:     getMap(input, "tool_input"),
 			ToolUseID:     getString(input, "tool_use_id"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "PostToolUse":
 		return PostToolUseInput{
@@ -366,6 +368,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolInput:     getMap(input, "tool_input"),
 			ToolResponse:  input["tool_response"],
 			ToolUseID:     getString(input, "tool_use_id"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "UserPromptSubmit":
 		return UserPromptSubmitInput{
@@ -385,6 +389,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolUseID:     getString(input, "tool_use_id"),
 			Error:         getString(input, "error"),
 			IsInterrupt:   getBool(input, "is_interrupt"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "Notification":
 		return NotificationInput{
@@ -413,6 +419,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolName:              getString(input, "tool_name"),
 			ToolInput:             getMap(input, "tool_input"),
 			PermissionSuggestions: getSlice(input, "permission_suggestions"),
+			AgentID:               getStringPtr(input, "agent_id"),
+			AgentType:             getStringPtr(input, "agent_type"),
 		}
 	case "PreCompact":
 		return PreCompactInput{
@@ -423,6 +431,13 @@ func parseHookInput(input map[string]any) HookInput {
 	default:
 		return base
 	}
+}
+
+func getStringPtr(m map[string]any, key string) *string {
+	if v, ok := m[key].(string); ok {
+		return &v
+	}
+	return nil
 }
 
 func getString(m map[string]any, key string) string {
