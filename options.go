@@ -41,9 +41,12 @@ type AgentDefinition struct {
 	Skills []string `json:"skills,omitzero"`
 	Memory *string  `json:"memory,omitzero"` // "user", "project", "local"
 	// Each entry is a server name (string) or an inline map (name -> config).
-	McpServers    []any   `json:"mcpServers,omitzero"`
-	InitialPrompt *string `json:"initialPrompt,omitzero"`
-	MaxTurns      *int    `json:"maxTurns,omitzero"`
+	McpServers          []any   `json:"mcpServers,omitzero"`
+	InitialPrompt       *string `json:"initialPrompt,omitzero"`
+	MaxTurns            *int    `json:"maxTurns,omitzero"`
+	Background          *bool   `json:"background,omitzero"`
+	Effort              any     `json:"effort,omitzero"`
+	AgentPermissionMode *string `json:"permissionMode,omitzero"`
 }
 
 // SandboxSettings configures the sandbox for bash commands.
@@ -479,7 +482,6 @@ type Options struct {
 	enableFileCheckpointing bool
 	stderrCallback          func(string)
 	streamingMode           bool
-
 }
 
 // Option is a functional option for configuring a Claude Code session.

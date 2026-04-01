@@ -424,6 +424,125 @@ func TestAgentDefinitionJSON(t *testing.T) {
 		assert.Equal(t, "claude-opus-4-5", decoded.Model)
 	})
 
+	t.Run("background serializes correctly", func(t *testing.T) {
+		bg := true
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			Background:  &bg,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, true, m["background"])
+	})
+
+	t.Run("effort accepts named level", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			Effort:      "high",
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, "high", m["effort"])
+	})
+
+	t.Run("effort accepts integer", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+			Effort:      32000,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, float64(32000), m["effort"])
+	})
+
+	t.Run("permissionMode serializes as camelCase", func(t *testing.T) {
+		mode := "bypassPermissions"
+		agent := AgentDefinition{
+			Description:         "test",
+			Prompt:              "p",
+			AgentPermissionMode: &mode,
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.Equal(t, "bypassPermissions", m["permissionMode"])
+		assert.NotContains(t, m, "permission_mode")
+	})
+
+	t.Run("background effort permissionMode omitted when unset", func(t *testing.T) {
+		agent := AgentDefinition{
+			Description: "test",
+			Prompt:      "p",
+		}
+		data, err := json.Marshal(agent)
+		require.NoError(t, err)
+
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(data, &m))
+
+		assert.NotContains(t, m, "background")
+		assert.NotContains(t, m, "effort")
+		assert.NotContains(t, m, "permissionMode")
+	})
+
+	t.Run("round-trip preserves background effort and permissionMode", func(t *testing.T) {
+		bg := true
+		mode := "dontAsk"
+		original := AgentDefinition{
+			Description:         "round-trip test",
+			Prompt:              "prompt",
+			Background:          &bg,
+			Effort:              "high",
+			AgentPermissionMode: &mode,
+		}
+		data, err := json.Marshal(original)
+		require.NoError(t, err)
+
+		var decoded AgentDefinition
+		require.NoError(t, json.Unmarshal(data, &decoded))
+
+		require.NotNil(t, decoded.Background)
+		assert.Equal(t, true, *decoded.Background)
+		assert.Equal(t, "high", decoded.Effort)
+		require.NotNil(t, decoded.AgentPermissionMode)
+		assert.Equal(t, "dontAsk", *decoded.AgentPermissionMode)
+	})
+
+	t.Run("round-trip effort as integer produces float64", func(t *testing.T) {
+		// JSON unmarshal into any produces float64 for numbers.
+		original := AgentDefinition{
+			Description: "effort-int test",
+			Prompt:      "prompt",
+			Effort:      32000,
+		}
+		data, err := json.Marshal(original)
+		require.NoError(t, err)
+
+		var decoded AgentDefinition
+		require.NoError(t, json.Unmarshal(data, &decoded))
+
+		// After round-trip through JSON, integer becomes float64.
+		assert.Equal(t, float64(32000), decoded.Effort)
+	})
+
 	t.Run("mcpServers serializes as camelCase", func(t *testing.T) {
 		agent := AgentDefinition{
 			Description: "test",
