@@ -745,6 +745,7 @@ func TestSubprocessTransport_Close_GracefulExit(t *testing.T) {
 func TestSubprocessTransport_Close_TimeoutSendsSIGTERM(t *testing.T) {
 	// "sleep 999" ignores stdin close and will hang indefinitely.
 	// With a short grace period, Close should time out and send SIGTERM.
+	// "sleep" does not trap SIGTERM, so it exits immediately when signaled.
 	cmd := exec.Command("sleep", "999")
 
 	transport := setupTransportWithProcess(t, cmd)
@@ -759,7 +760,8 @@ func TestSubprocessTransport_Close_TimeoutSendsSIGTERM(t *testing.T) {
 
 	require.NoError(t, err)
 
-	// Should complete in roughly the grace period (plus some slack for cleanup)
+	// Should complete in roughly the grace period (plus some slack for cleanup).
+	// "sleep" responds to SIGTERM immediately, so no SIGKILL escalation is needed.
 	assert.Less(t, elapsed, 3*time.Second,
 		"should not hang much beyond the grace period")
 	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond,
@@ -769,6 +771,57 @@ func TestSubprocessTransport_Close_TimeoutSendsSIGTERM(t *testing.T) {
 	// process returns an error.
 	err = syscall.Kill(pid, 0)
 	assert.Error(t, err, "process should no longer be running after Close")
+}
+
+func TestSubprocessTransport_Close_SIGKILLAfterSIGTERM(t *testing.T) {
+	// This process traps SIGTERM and blocks indefinitely. After the SIGTERM
+	// grace period expires, Close must escalate to SIGKILL.
+	script := `trap '' TERM; sleep 999`
+	cmd := exec.Command("sh", "-c", script)
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+	transport.sigtermGracePeriod = 100 * time.Millisecond
+
+	pid := cmd.Process.Pid
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete after both grace periods (stdin + SIGTERM) but not hang.
+	assert.Less(t, elapsed, 3*time.Second,
+		"Close must not hang when SIGTERM handler blocks; SIGKILL should terminate it")
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond,
+		"should have waited at least the stdin grace + SIGTERM grace periods")
+
+	// Verify process is no longer running.
+	err = syscall.Kill(pid, 0)
+	assert.Error(t, err, "process should be dead after SIGKILL")
+}
+
+func TestSubprocessTransport_Close_NoSIGKILLWhenSIGTERMSucceeds(t *testing.T) {
+	// "sleep 999" does not trap SIGTERM, so it exits immediately when
+	// signaled. Close should NOT escalate to SIGKILL.
+	cmd := exec.Command("sleep", "999")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+	transport.sigtermGracePeriod = 100 * time.Millisecond
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete after the stdin grace period and a fast SIGTERM response.
+	// The SIGTERM grace period should NOT be fully consumed because "sleep"
+	// exits immediately on SIGTERM.
+	assert.Less(t, elapsed, 2*time.Second,
+		"should complete quickly when SIGTERM succeeds; no SIGKILL timeout needed")
 }
 
 func TestSubprocessTransport_Close_AlreadyExited(t *testing.T) {

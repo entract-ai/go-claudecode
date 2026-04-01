@@ -32,6 +32,12 @@ const (
 	// EOF on stdin. Without this grace period, SIGTERM can interrupt the
 	// write and cause the last assistant message to be lost.
 	DefaultShutdownGracePeriod = 5 * time.Second
+
+	// DefaultSigtermGracePeriod is how long Close waits after sending
+	// SIGTERM before escalating to SIGKILL. If the subprocess has a
+	// SIGTERM handler that blocks (e.g. waiting for an MCP server or
+	// subagent to exit), we must not hang forever.
+	DefaultSigtermGracePeriod = 5 * time.Second
 )
 
 // SubprocessTransport implements Transport using the Claude Code CLI subprocess.
@@ -41,6 +47,10 @@ type SubprocessTransport struct {
 	// shutdownGracePeriod is how long Close waits for the process to exit
 	// on its own before sending SIGTERM. Zero means use DefaultShutdownGracePeriod.
 	shutdownGracePeriod time.Duration
+
+	// sigtermGracePeriod is how long Close waits after sending SIGTERM
+	// before escalating to SIGKILL. Zero means use DefaultSigtermGracePeriod.
+	sigtermGracePeriod time.Duration
 
 	mu            sync.Mutex
 	cmd           *exec.Cmd
@@ -355,11 +365,16 @@ func (t *SubprocessTransport) EndInput(ctx context.Context) error {
 
 // Close closes the transport and releases resources.
 //
-// After closing stdin, the subprocess is given a grace period to exit on its
-// own (flushing session files, etc.). If it does not exit within the grace
-// period, SIGTERM is sent and we wait again. This avoids the previous behavior
-// of immediately killing the process, which could interrupt session file writes
-// and lose the last assistant message.
+// The shutdown sequence is:
+//  1. Close stdin (signals EOF to subprocess)
+//  2. Wait up to shutdownGracePeriod (default 5s) for graceful exit
+//  3. Send SIGTERM
+//  4. Wait up to sigtermGracePeriod (default 5s) for SIGTERM to take effect
+//  5. Send SIGKILL if process is still alive (cannot be caught or blocked)
+//
+// The grace period after stdin EOF gives the subprocess time to flush its
+// session file. The SIGKILL fallback prevents hanging indefinitely when the
+// subprocess has a SIGTERM handler that blocks.
 func (t *SubprocessTransport) Close(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -398,6 +413,11 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 			waitDone <- t.cmd.Wait()
 		}()
 
+		sigtermGrace := t.sigtermGracePeriod
+		if sigtermGrace == 0 {
+			sigtermGrace = DefaultSigtermGracePeriod
+		}
+
 		select {
 		case <-waitDone:
 			// Process exited on its own within the grace period.
@@ -405,8 +425,20 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 		case <-time.After(grace):
 			// Grace period expired -- send SIGTERM and wait for cleanup.
 			_ = t.cmd.Process.Signal(syscall.SIGTERM)
-			<-waitDone
-			t.waited = true
+
+			// Wait for the process to respond to SIGTERM. If its signal
+			// handler blocks (e.g. waiting for an MCP server or subagent
+			// to exit), we must not hang forever -- escalate to SIGKILL.
+			select {
+			case <-waitDone:
+				// Process exited after SIGTERM.
+				t.waited = true
+			case <-time.After(sigtermGrace):
+				// SIGTERM handler blocked -- force kill (SIGKILL).
+				_ = t.cmd.Process.Kill()
+				<-waitDone
+				t.waited = true
+			}
 		}
 	}
 
