@@ -134,10 +134,11 @@ func TestParseTranscript(t *testing.T) {
 }
 
 func TestParseTranscript_UnknownTypesSkipped(t *testing.T) {
-	// Unknown message types (including rate_limit_event) should be silently
-	// skipped in transcript parsing, not cause errors.
+	// Unknown message types should be silently skipped in transcript
+	// parsing, not cause errors. rate_limit_event is now a known type
+	// and should be included in the results.
 	content := `{"type":"user","message":{"role":"user","content":"Hello"},"uuid":"u1"}
-{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"},"uuid":"rle-1","session_id":"s1"}
 {"type":"some_future_event","data":"whatever"}
 {"type":"assistant","message":{"model":"claude-3-5-sonnet","content":[{"type":"text","text":"Hi!"}]}}`
 
@@ -148,12 +149,14 @@ func TestParseTranscript_UnknownTypesSkipped(t *testing.T) {
 
 	messages, err := ParseTranscript(path)
 	require.NoError(t, err, "unknown message types in transcript should not cause errors")
-	assert.Len(t, messages, 2, "only known message types should be returned")
+	assert.Len(t, messages, 3, "rate_limit_event is now known; only some_future_event should be skipped")
 
 	_, ok := messages[0].(*UserMessage)
 	assert.True(t, ok, "first message should be UserMessage")
-	_, ok = messages[1].(*AssistantMessage)
-	assert.True(t, ok, "second message should be AssistantMessage")
+	_, ok = messages[1].(*RateLimitEvent)
+	assert.True(t, ok, "second message should be RateLimitEvent")
+	_, ok = messages[2].(*AssistantMessage)
+	assert.True(t, ok, "third message should be AssistantMessage")
 }
 
 func TestParseTranscript_FileNotFound(t *testing.T) {

@@ -142,6 +142,46 @@ type StreamEvent struct {
 
 func (StreamEvent) messageMarker() {}
 
+// RateLimitStatus represents the current rate limit status.
+type RateLimitStatus string
+
+const (
+	RateLimitStatusAllowed        RateLimitStatus = "allowed"
+	RateLimitStatusAllowedWarning RateLimitStatus = "allowed_warning"
+	RateLimitStatusRejected       RateLimitStatus = "rejected"
+)
+
+// RateLimitInfo contains rate limit status emitted by the CLI when
+// rate limit state changes.
+//
+// Field names follow Go conventions; JSON tags map to the camelCase
+// wire format used by the CLI. The Raw field preserves the original
+// dict including any fields not modeled above for forward compatibility.
+type RateLimitInfo struct {
+	Status                RateLimitStatus `json:"status"`
+	ResetsAt              *int64          `json:"resetsAt,omitzero"`
+	RateLimitType         *string         `json:"rateLimitType,omitzero"`
+	Utilization           *float64        `json:"utilization,omitzero"`
+	OverageStatus         *string         `json:"overageStatus,omitzero"`
+	OverageResetsAt       *int64          `json:"overageResetsAt,omitzero"`
+	OverageDisabledReason *string         `json:"overageDisabledReason,omitzero"`
+	Raw                   map[string]any  `json:"-"`
+}
+
+// RateLimitEvent is emitted when rate limit info changes.
+//
+// The CLI emits this whenever the rate limit status transitions (e.g.
+// from "allowed" to "allowed_warning"). Use this to warn users before
+// they hit a hard limit, or to gracefully back off when status is
+// "rejected".
+type RateLimitEvent struct {
+	RateLimitInfo RateLimitInfo `json:"rate_limit_info"`
+	UUID          string        `json:"uuid"`
+	SessionID     string        `json:"session_id"`
+}
+
+func (RateLimitEvent) messageMarker() {}
+
 // UsageStats represents token usage statistics.
 type UsageStats struct {
 	InputTokens  int `json:"input_tokens"`
@@ -179,8 +219,7 @@ func (ControlCancelRequest) messageMarker() {}
 // For recognized message types, it returns the parsed message.
 // For unrecognized message types, it returns (nil, nil) to signal that the
 // message should be silently skipped. This makes the SDK forward-compatible
-// with new CLI message types (e.g., rate_limit_event) that it doesn't yet
-// understand.
+// with new CLI message types that it doesn't yet understand.
 // For genuinely broken messages (missing type field, malformed JSON), it
 // returns an error.
 func parseMessage(raw json.RawMessage) (Message, error) {
@@ -212,6 +251,8 @@ func parseMessage(raw json.RawMessage) (Message, error) {
 		return parseControlResponse(raw)
 	case "control_cancel_request":
 		return parseControlCancelRequest(raw)
+	case "rate_limit_event":
+		return parseRateLimitEvent(raw)
 	default:
 		// Forward-compatible: skip unrecognized message types so newer
 		// CLI versions don't crash older SDK versions.
@@ -378,6 +419,24 @@ func parseControlCancelRequest(raw json.RawMessage) (*ControlCancelRequest, erro
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse control cancel request: %v", err)}
 	}
+	return &msg, nil
+}
+
+func parseRateLimitEvent(raw json.RawMessage) (*RateLimitEvent, error) {
+	var msg RateLimitEvent
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse rate limit event: %v", err)}
+	}
+
+	// Preserve the raw rate_limit_info dict for forward compatibility
+	// with fields not yet modeled in RateLimitInfo.
+	var holder struct {
+		RateLimitInfo map[string]any `json:"rate_limit_info"`
+	}
+	if err := json.Unmarshal(raw, &holder); err == nil {
+		msg.RateLimitInfo.Raw = holder.RateLimitInfo
+	}
+
 	return &msg, nil
 }
 

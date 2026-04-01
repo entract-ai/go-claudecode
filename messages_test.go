@@ -553,9 +553,9 @@ func TestParseUnknownType(t *testing.T) {
 }
 
 func TestParseRateLimitEvent(t *testing.T) {
-	// CLI v2.1.45+ emits rate_limit_event messages. The SDK should
-	// skip these gracefully rather than crashing.
-	t.Run("allowed warning", func(t *testing.T) {
+	// CLI v2.1.45+ emits rate_limit_event messages. The SDK parses
+	// these into typed RateLimitEvent so callers can act on warnings.
+	t.Run("allowed warning with full fields", func(t *testing.T) {
 		input := `{
 			"type": "rate_limit_event",
 			"rate_limit_info": {
@@ -571,10 +571,26 @@ func TestParseRateLimitEvent(t *testing.T) {
 
 		msg, err := parseMessage(json.RawMessage(input))
 		require.NoError(t, err, "rate_limit_event should not return an error")
-		assert.Nil(t, msg, "rate_limit_event should return nil message")
+		require.NotNil(t, msg, "rate_limit_event should return a typed message")
+
+		rle, ok := msg.(*RateLimitEvent)
+		require.True(t, ok, "expected *RateLimitEvent, got %T", msg)
+		assert.Equal(t, "550e8400-e29b-41d4-a716-446655440000", rle.UUID)
+		assert.Equal(t, "test-session-id", rle.SessionID)
+
+		info := rle.RateLimitInfo
+		assert.Equal(t, RateLimitStatus("allowed_warning"), info.Status)
+		require.NotNil(t, info.ResetsAt)
+		assert.Equal(t, int64(1700000000), *info.ResetsAt)
+		require.NotNil(t, info.RateLimitType)
+		assert.Equal(t, "five_hour", *info.RateLimitType)
+		require.NotNil(t, info.Utilization)
+		assert.InDelta(t, 0.85, *info.Utilization, 0.001)
+		// Unmodeled field preserved in Raw
+		assert.Equal(t, false, info.Raw["isUsingOverage"])
 	})
 
-	t.Run("rejected", func(t *testing.T) {
+	t.Run("rejected with overage info", func(t *testing.T) {
 		input := `{
 			"type": "rate_limit_event",
 			"rate_limit_info": {
@@ -591,7 +607,54 @@ func TestParseRateLimitEvent(t *testing.T) {
 
 		msg, err := parseMessage(json.RawMessage(input))
 		require.NoError(t, err, "rate_limit_event should not return an error")
-		assert.Nil(t, msg, "rate_limit_event should return nil message")
+		require.NotNil(t, msg, "rate_limit_event should return a typed message")
+
+		rle, ok := msg.(*RateLimitEvent)
+		require.True(t, ok, "expected *RateLimitEvent, got %T", msg)
+
+		info := rle.RateLimitInfo
+		assert.Equal(t, RateLimitStatus("rejected"), info.Status)
+		require.NotNil(t, info.OverageStatus)
+		assert.Equal(t, "rejected", *info.OverageStatus)
+		require.NotNil(t, info.OverageDisabledReason)
+		assert.Equal(t, "out_of_credits", *info.OverageDisabledReason)
+	})
+
+	t.Run("minimal fields - only status required", func(t *testing.T) {
+		input := `{
+			"type": "rate_limit_event",
+			"rate_limit_info": {"status": "allowed"},
+			"uuid": "770e8400-e29b-41d4-a716-446655440002",
+			"session_id": "test-session-id"
+		}`
+
+		msg, err := parseMessage(json.RawMessage(input))
+		require.NoError(t, err)
+		require.NotNil(t, msg)
+
+		rle, ok := msg.(*RateLimitEvent)
+		require.True(t, ok, "expected *RateLimitEvent, got %T", msg)
+
+		info := rle.RateLimitInfo
+		assert.Equal(t, RateLimitStatus("allowed"), info.Status)
+		assert.Nil(t, info.ResetsAt)
+		assert.Nil(t, info.RateLimitType)
+		assert.Nil(t, info.Utilization)
+		assert.Nil(t, info.OverageStatus)
+		assert.Nil(t, info.OverageResetsAt)
+		assert.Nil(t, info.OverageDisabledReason)
+	})
+
+	t.Run("unknown types still return nil", func(t *testing.T) {
+		input := `{
+			"type": "some_future_event_type",
+			"uuid": "880e8400-e29b-41d4-a716-446655440003",
+			"session_id": "test-session-id"
+		}`
+
+		msg, err := parseMessage(json.RawMessage(input))
+		require.NoError(t, err, "unknown types should not return an error")
+		assert.Nil(t, msg, "unknown types should return nil for forward compat")
 	})
 }
 

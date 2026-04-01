@@ -261,6 +261,17 @@ func TestToChatMessage_StreamEvent_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot convert")
 }
 
+func TestToChatMessage_RateLimitEvent_ReturnsError(t *testing.T) {
+	msg := &RateLimitEvent{
+		RateLimitInfo: RateLimitInfo{Status: "allowed_warning"},
+		UUID:          "e1",
+		SessionID:     "s1",
+	}
+	_, err := ToChatMessage(msg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot convert")
+}
+
 func TestToChatMessages_FiltersToUserAndAssistant(t *testing.T) {
 	messages := []Message{
 		&SystemMessage{Subtype: "init"},

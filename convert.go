@@ -38,6 +38,8 @@ func ToChatMessage(msg Message) (chat.Message, error) {
 		return chat.Message{}, fmt.Errorf("cannot convert ResultMessage to chat.Message")
 	case *StreamEvent:
 		return chat.Message{}, fmt.Errorf("cannot convert StreamEvent to chat.Message")
+	case *RateLimitEvent:
+		return chat.Message{}, fmt.Errorf("cannot convert RateLimitEvent to chat.Message")
 	case *ControlRequest:
 		return chat.Message{}, fmt.Errorf("cannot convert ControlRequest to chat.Message")
 	case *ControlResponse:
