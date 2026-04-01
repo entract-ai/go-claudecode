@@ -425,6 +425,15 @@ func (c *Client) GetMCPStatus(ctx context.Context) (McpStatusResponse, error) {
 	return router.GetMCPStatus(ctx)
 }
 
+// GetContextUsage returns a breakdown of current context window usage by category.
+func (c *Client) GetContextUsage(ctx context.Context) (ContextUsageResponse, error) {
+	router, err := c.getRouterIfConnected()
+	if err != nil {
+		return ContextUsageResponse{}, err
+	}
+	return router.GetContextUsage(ctx)
+}
+
 // GetServerInfo returns the cached initialization result.
 func (c *Client) GetServerInfo() map[string]any {
 	c.mu.Lock()

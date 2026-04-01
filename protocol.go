@@ -622,6 +622,26 @@ func (r *ControlRouter) GetMCPStatus(ctx context.Context) (McpStatusResponse, er
 	return resp, nil
 }
 
+// GetContextUsage returns a breakdown of current context window usage by category.
+func (r *ControlRouter) GetContextUsage(ctx context.Context) (ContextUsageResponse, error) {
+	raw, err := r.sendControlRequest(ctx, map[string]any{"subtype": "get_context_usage"}, DefaultControlTimeout)
+	if err != nil {
+		return ContextUsageResponse{}, err
+	}
+
+	// Re-marshal the raw response map and decode into the typed struct.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return ContextUsageResponse{}, fmt.Errorf("marshal get_context_usage response: %w", err)
+	}
+
+	var resp ContextUsageResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return ContextUsageResponse{}, fmt.Errorf("decode get_context_usage response: %w", err)
+	}
+	return resp, nil
+}
+
 // ReconnectMCPServer sends a control request to reconnect a disconnected or
 // failed MCP server.
 func (r *ControlRouter) ReconnectMCPServer(ctx context.Context, serverName string) error {

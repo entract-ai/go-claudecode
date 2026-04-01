@@ -168,6 +168,79 @@ type McpStatusResponse struct {
 	McpServers []McpServerStatus `json:"mcpServers"`
 }
 
+// ContextUsageCategory represents a single context usage category
+// (system prompt, tools, messages, etc.).
+type ContextUsageCategory struct {
+	Name       string `json:"name"`
+	Tokens     int    `json:"tokens"`
+	Color      string `json:"color"`
+	IsDeferred *bool  `json:"isDeferred,omitempty"`
+}
+
+// ContextUsageResponse is the response from Client.GetContextUsage.
+// It provides a breakdown of current context window usage by category,
+// matching the data shown by the /context command in the CLI.
+type ContextUsageResponse struct {
+	// Categories is the token usage broken down by category
+	// (system prompt, tools, messages, etc.).
+	Categories []ContextUsageCategory `json:"categories"`
+
+	// TotalTokens is the total tokens currently in the context window.
+	TotalTokens int `json:"totalTokens"`
+
+	// MaxTokens is the effective maximum tokens (may be reduced by autocompact buffer).
+	MaxTokens int `json:"maxTokens"`
+
+	// RawMaxTokens is the raw model context window size.
+	RawMaxTokens int `json:"rawMaxTokens"`
+
+	// Percentage is the percent of context window used (0-100).
+	Percentage float64 `json:"percentage"`
+
+	// Model is the model name the context usage is calculated for.
+	Model string `json:"model"`
+
+	// IsAutoCompactEnabled indicates whether autocompact is enabled for this session.
+	IsAutoCompactEnabled bool `json:"isAutoCompactEnabled"`
+
+	// MemoryFiles lists CLAUDE.md and memory files loaded, with path, type, and token counts.
+	MemoryFiles []map[string]any `json:"memoryFiles"`
+
+	// McpTools lists MCP tools with name, serverName, tokens, and isLoaded status.
+	McpTools []map[string]any `json:"mcpTools"`
+
+	// Agents lists agent definitions with agentType, source, and token counts.
+	Agents []map[string]any `json:"agents"`
+
+	// GridRows is the visual grid representation used by the CLI context display.
+	GridRows [][]map[string]any `json:"gridRows"`
+
+	// AutoCompactThreshold is the token threshold at which autocompact triggers.
+	AutoCompactThreshold *int `json:"autoCompactThreshold,omitempty"`
+
+	// DeferredBuiltinTools lists built-in tools deferred from the initial tool list.
+	DeferredBuiltinTools []map[string]any `json:"deferredBuiltinTools,omitempty"`
+
+	// SystemTools lists system (built-in) tools with name and token counts.
+	SystemTools []map[string]any `json:"systemTools,omitempty"`
+
+	// SystemPromptSections lists system prompt sections with name and token counts.
+	SystemPromptSections []map[string]any `json:"systemPromptSections,omitempty"`
+
+	// SlashCommands is the slash command usage summary.
+	SlashCommands map[string]any `json:"slashCommands,omitempty"`
+
+	// Skills is the skill usage summary with frontmatter breakdown.
+	Skills map[string]any `json:"skills,omitempty"`
+
+	// MessageBreakdown is a detailed breakdown of message tokens by type
+	// (tool calls, results, etc.).
+	MessageBreakdown map[string]any `json:"messageBreakdown,omitempty"`
+
+	// APIUsage is the cumulative API usage for the session.
+	APIUsage map[string]any `json:"apiUsage,omitempty"`
+}
+
 // CanUseToolFunc is the callback type for tool permission decisions.
 type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error)
 
