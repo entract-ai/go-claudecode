@@ -321,7 +321,8 @@ func TestListSessions(t *testing.T) {
 		assert.Equal(t, "What is 2+2?", s.Summary) // no custom title or summary -> first prompt
 		assert.Equal(t, "main", *s.GitBranch)
 		assert.Equal(t, projectPath, *s.Cwd)
-		assert.Greater(t, s.FileSize, int64(0))
+		require.NotNil(t, s.FileSize)
+		assert.Greater(t, *s.FileSize, int64(0))
 		assert.Greater(t, s.LastModified, int64(0))
 		assert.Nil(t, s.CustomTitle)
 	})
@@ -780,22 +781,33 @@ func compactTagLine(tag, sessionID string) string {
 
 func TestSDKSessionInfoType(t *testing.T) {
 	t.Run("required fields", func(t *testing.T) {
+		fs := int64(42)
 		info := SDKSessionInfo{
 			SessionID:    "abc",
 			Summary:      "test",
 			LastModified: 1000,
-			FileSize:     42,
+			FileSize:     &fs,
 		}
 		assert.Equal(t, "abc", info.SessionID)
 		assert.Equal(t, "test", info.Summary)
 		assert.Equal(t, int64(1000), info.LastModified)
-		assert.Equal(t, int64(42), info.FileSize)
+		require.NotNil(t, info.FileSize)
+		assert.Equal(t, int64(42), *info.FileSize)
 		assert.Nil(t, info.CustomTitle)
 		assert.Nil(t, info.FirstPrompt)
 		assert.Nil(t, info.GitBranch)
 		assert.Nil(t, info.Cwd)
 		assert.Nil(t, info.Tag)
 		assert.Nil(t, info.CreatedAt)
+	})
+
+	t.Run("file_size defaults to nil", func(t *testing.T) {
+		info := SDKSessionInfo{
+			SessionID:    "abc",
+			Summary:      "test",
+			LastModified: 1000,
+		}
+		assert.Nil(t, info.FileSize)
 	})
 }
 
@@ -1449,6 +1461,211 @@ func TestCreatedAtExtraction(t *testing.T) {
 		require.NotNil(t, info)
 		require.NotNil(t, info.CreatedAt)
 		assert.Equal(t, int64(1768473000000), *info.CreatedAt)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// GetSessionInfo tests
+// ---------------------------------------------------------------------------
+
+func TestGetSessionInfo(t *testing.T) {
+	t.Run("invalid session ID", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		info, err := GetSessionInfo("not-a-uuid", withTestConfigDir(configDir))
+		require.NoError(t, err)
+		assert.Nil(t, info)
+
+		info, err = GetSessionInfo("", withTestConfigDir(configDir))
+		require.NoError(t, err)
+		assert.Nil(t, info)
+	})
+
+	t.Run("nonexistent session", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		sid := nextTestUUID(t)
+		info, err := GetSessionInfo(sid, withTestConfigDir(configDir))
+		require.NoError(t, err)
+		assert.Nil(t, info)
+	})
+
+	t.Run("no config dir", func(t *testing.T) {
+		sid := nextTestUUID(t)
+		info, err := GetSessionInfo(sid, withTestConfigDir(filepath.Join(t.TempDir(), "nonexistent")))
+		require.NoError(t, err)
+		assert.Nil(t, info)
+	})
+
+	t.Run("found with directory", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{
+			firstPrompt: "hello",
+			gitBranch:   "main",
+		})
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, sid, info.SessionID)
+		assert.Equal(t, "hello", info.Summary)
+		assert.Equal(t, "main", *info.GitBranch)
+	})
+
+	t.Run("found without directory", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projDir := makeProjectDir(t, configDir, "/some/project")
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "search all"})
+
+		info, err := GetSessionInfo(sid, withTestConfigDir(configDir))
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, sid, info.SessionID)
+		assert.Equal(t, "search all", info.Summary)
+	})
+
+	t.Run("returns nil for sidechain", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{
+			firstPrompt: "sidechain",
+			isSidechain: true,
+		})
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		assert.Nil(t, info)
+	})
+
+	t.Run("directory not containing session", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectA := filepath.Join(t.TempDir(), "proj-a")
+		projectB := filepath.Join(t.TempDir(), "proj-b")
+		require.NoError(t, os.MkdirAll(projectA, 0o755))
+		require.NoError(t, os.MkdirAll(projectB, 0o755))
+		realA, err := filepath.EvalSymlinks(projectA)
+		require.NoError(t, err)
+		realB, err := filepath.EvalSymlinks(projectB)
+		require.NoError(t, err)
+
+		dirA := makeProjectDir(t, configDir, realA)
+		makeProjectDir(t, configDir, realB)
+		sid, _ := makeSessionFile(t, dirA, "", makeSessionOpts{firstPrompt: "in A only"})
+
+		// Session exists in A but we look in B -- should return nil
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectB),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		assert.Nil(t, info)
+
+		// But searching all projects finds it
+		info, err = GetSessionInfo(sid, withTestConfigDir(configDir))
+		require.NoError(t, err)
+		assert.NotNil(t, info)
+	})
+
+	t.Run("includes tag", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid := nextTestUUID(t)
+		filePath := filepath.Join(projDir, sid+".jsonl")
+		lines := jsonLine(map[string]any{"type": "user", "message": map[string]any{"content": "hello"}}) + "\n" +
+			compactTagLine("urgent", sid) + "\n"
+		require.NoError(t, os.WriteFile(filePath, []byte(lines), 0o644))
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, "urgent", *info.Tag)
+	})
+
+	t.Run("includes created_at", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid := nextTestUUID(t)
+		filePath := filepath.Join(projDir, sid+".jsonl")
+		lines := jsonLine(map[string]any{
+			"type": "user", "message": map[string]any{"content": "hello"}, "timestamp": "2026-01-15T10:30:00.000Z",
+		}) + "\n"
+		require.NoError(t, os.WriteFile(filePath, []byte(lines), 0o644))
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.NotNil(t, info.CreatedAt)
+		assert.Equal(t, int64(1768473000000), *info.CreatedAt)
+	})
+
+	t.Run("includes file_size", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid, _ := makeSessionFile(t, projDir, "", makeSessionOpts{firstPrompt: "hello"})
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.NotNil(t, info.FileSize)
+		assert.Greater(t, *info.FileSize, int64(0))
+	})
+
+	t.Run("empty file returns nil", func(t *testing.T) {
+		configDir := setupConfigDir(t)
+		projectPath := filepath.Join(t.TempDir(), "proj")
+		require.NoError(t, os.MkdirAll(projectPath, 0o755))
+		realPath, err := filepath.EvalSymlinks(projectPath)
+		require.NoError(t, err)
+
+		projDir := makeProjectDir(t, configDir, realPath)
+		sid := nextTestUUID(t)
+		require.NoError(t, os.WriteFile(filepath.Join(projDir, sid+".jsonl"), []byte(""), 0o644))
+
+		info, err := GetSessionInfo(sid,
+			WithSessionDirectory(projectPath),
+			withTestConfigDir(configDir),
+		)
+		require.NoError(t, err)
+		assert.Nil(t, info)
 	})
 }
 

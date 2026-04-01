@@ -31,8 +31,9 @@ type SDKSessionInfo struct {
 	// LastModified is the last modified time in milliseconds since epoch.
 	LastModified int64
 
-	// FileSize is the session file size in bytes.
-	FileSize int64
+	// FileSize is the session file size in bytes. Only populated for local
+	// JSONL storage; may be nil for remote storage backends.
+	FileSize *int64
 
 	// CustomTitle is the user-set custom title or AI-generated title.
 	// Nil when no title has been set.
@@ -637,7 +638,7 @@ func parseSessionInfoFromLite(sessionID string, lite *liteSessionFile, projectPa
 		SessionID:    sessionID,
 		Summary:      summary,
 		LastModified: lite.mtime,
-		FileSize:     lite.size,
+		FileSize:     &lite.size,
 		CustomTitle:  customTitle,
 		FirstPrompt:  firstPrompt,
 		GitBranch:    gitBranch,
@@ -838,6 +839,76 @@ func listAllSessions(configDir string, o *sessionOptions) ([]SDKSessionInfo, err
 
 	deduped := deduplicateBySessionID(allSessions)
 	return applySortLimitOffset(deduped, o.limit, o.offset), nil
+}
+
+// ---------------------------------------------------------------------------
+// GetSessionInfo -- single-session metadata lookup
+// ---------------------------------------------------------------------------
+
+// GetSessionInfo reads metadata for a single session by ID.
+//
+// Wraps readSessionLite for one file -- no O(n) directory scan.
+// Directory resolution matches GetSessionMessages: the directory option is
+// the project path; when omitted, all project directories are searched for
+// the session file.
+//
+// Returns (nil, nil) if the session file is not found, the sessionID is not
+// a valid UUID, or the session is a sidechain/metadata-only session with no
+// extractable summary.
+func GetSessionInfo(sessionID string, opts ...SessionOption) (*SDKSessionInfo, error) {
+	if !validateUUID(sessionID) {
+		return nil, nil
+	}
+	fileName := sessionID + ".jsonl"
+
+	o := applySessionOptions(opts...)
+	configDir := getClaudeConfigDir(o.configDir)
+
+	if o.directory != "" {
+		canonicalDir := canonicalizePath(o.directory)
+		projDir := findProjectDir(configDir, canonicalDir)
+		if projDir != "" {
+			lite := readSessionLite(filepath.Join(projDir, fileName))
+			if lite != nil {
+				return parseSessionInfoFromLite(sessionID, lite, canonicalDir), nil
+			}
+		}
+
+		// Worktree fallback -- matches GetSessionMessages semantics.
+		// Sessions may live under a different worktree root.
+		worktreePaths := getWorktreePaths(canonicalDir)
+		for _, wt := range worktreePaths {
+			if wt == canonicalDir {
+				continue
+			}
+			wtProjDir := findProjectDir(configDir, wt)
+			if wtProjDir != "" {
+				lite := readSessionLite(filepath.Join(wtProjDir, fileName))
+				if lite != nil {
+					return parseSessionInfoFromLite(sessionID, lite, wt), nil
+				}
+			}
+		}
+
+		return nil, nil
+	}
+
+	// No directory -- search all project directories for the session file.
+	projectsDir := getProjectsDir(configDir)
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		lite := readSessionLite(filepath.Join(projectsDir, entry.Name(), fileName))
+		if lite != nil {
+			return parseSessionInfoFromLite(sessionID, lite, ""), nil
+		}
+	}
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
