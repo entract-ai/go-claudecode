@@ -420,7 +420,9 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 	args = append(args, "--verbose")
 
 	// System prompt handling
-	if t.options.systemPrompt != nil {
+	if t.options.systemPromptFile != "" {
+		args = append(args, "--system-prompt-file", t.options.systemPromptFile)
+	} else if t.options.systemPrompt != nil {
 		args = append(args, "--system-prompt", *t.options.systemPrompt)
 	} else if t.options.systemPromptAppend != "" {
 		args = append(args, "--append-system-prompt", t.options.systemPromptAppend)

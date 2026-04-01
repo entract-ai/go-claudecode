@@ -81,6 +81,23 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "Extra context", args[idx+1])
 	})
 
+	t.Run("with system prompt file", func(t *testing.T) {
+		opts := applyOptions(WithSystemPromptFile("/path/to/prompt.md"))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		// Should emit --system-prompt-file with the path
+		assert.Contains(t, args, "--system-prompt-file")
+		idx := indexOf(args, "--system-prompt-file")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "/path/to/prompt.md", args[idx+1])
+
+		// Should NOT emit --system-prompt or --append-system-prompt
+		assert.NotContains(t, args, "--system-prompt")
+		assert.NotContains(t, args, "--append-system-prompt")
+	})
+
 	t.Run("with model", func(t *testing.T) {
 		opts := applyOptions(WithModel("claude-sonnet-4-5"))
 		transport := NewSubprocessTransport(opts)

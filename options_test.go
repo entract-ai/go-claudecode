@@ -55,6 +55,11 @@ func TestApplyOptions(t *testing.T) {
 		assert.Equal(t, "Additional context", opts.systemPromptAppend)
 	})
 
+	t.Run("with system prompt file", func(t *testing.T) {
+		opts := applyOptions(WithSystemPromptFile("/path/to/prompt.md"))
+		assert.Equal(t, "/path/to/prompt.md", opts.systemPromptFile)
+	})
+
 	t.Run("with permission mode", func(t *testing.T) {
 		opts := applyOptions(WithPermissionMode(PermissionBypassPermissions))
 		assert.Equal(t, PermissionBypassPermissions, opts.permissionMode)

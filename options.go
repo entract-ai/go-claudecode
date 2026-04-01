@@ -325,6 +325,7 @@ type Options struct {
 	// System prompt
 	systemPrompt       *string // nil = use --system-prompt ""
 	systemPromptAppend string  // --append-system-prompt
+	systemPromptFile   string  // --system-prompt-file <path>
 
 	// MCP servers
 	mcpServers     map[string]MCPServerConfig
@@ -434,6 +435,15 @@ func WithSystemPrompt(prompt string) Option {
 func WithSystemPromptPreset(append string) Option {
 	return func(o *Options) {
 		o.systemPromptAppend = append
+	}
+}
+
+// WithSystemPromptFile sets a file path containing the system prompt.
+// When set, the CLI receives --system-prompt-file <path> instead of
+// --system-prompt or --append-system-prompt.
+func WithSystemPromptFile(path string) Option {
+	return func(o *Options) {
+		o.systemPromptFile = path
 	}
 }
 
