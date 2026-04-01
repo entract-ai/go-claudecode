@@ -346,6 +346,7 @@ type Options struct {
 	// Session
 	continueConversation bool
 	resume               string
+	sessionID            string
 	forkSession          bool
 
 	// Limits
@@ -527,6 +528,14 @@ func WithContinueConversation() Option {
 func WithResume(sessionID string) Option {
 	return func(o *Options) {
 		o.resume = sessionID
+	}
+}
+
+// WithSessionID sets a custom session ID (UUID) for the conversation.
+// When set, the CLI receives --session-id <id> instead of auto-generating one.
+func WithSessionID(id string) Option {
+	return func(o *Options) {
+		o.sessionID = id
 	}
 }
 

@@ -152,6 +152,28 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "session_123", args[idx+1])
 	})
 
+	t.Run("with session ID", func(t *testing.T) {
+		opts := applyOptions(WithSessionID("550e8400-e29b-41d4-a716-446655440000"))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.Contains(t, args, "--session-id")
+		idx := indexOf(args, "--session-id")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "550e8400-e29b-41d4-a716-446655440000", args[idx+1])
+	})
+
+	t.Run("session ID not set by default", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--session-id",
+			"--session-id should not be present when unset")
+	})
+
 	t.Run("with limits", func(t *testing.T) {
 		opts := applyOptions(
 			WithMaxTurns(10),

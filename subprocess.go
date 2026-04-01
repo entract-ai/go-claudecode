@@ -554,6 +554,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--resume", t.options.resume)
 	}
 
+	if t.options.sessionID != "" {
+		args = append(args, "--session-id", t.options.sessionID)
+	}
+
 	if t.options.forkSession {
 		args = append(args, "--fork-session")
 	}
