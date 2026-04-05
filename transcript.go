@@ -3,7 +3,6 @@ package claudecode
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,12 +33,13 @@ func ParseTranscript(path string) ([]Message, error) {
 
 		msg, err := parseMessage(json.RawMessage(line))
 		if err != nil {
-			// Skip unknown message types - transcripts often contain
-			// internal/diagnostic messages like queue-operation, saved_hook_context, etc.
-			if errors.Is(err, ErrUnknownMessageType) {
-				continue
-			}
 			return nil, fmt.Errorf("line %d: %w", lineNum, err)
+		}
+		// Skip unknown message types (parseMessage returns nil, nil).
+		// Transcripts often contain internal/diagnostic messages like
+		// queue-operation, saved_hook_context, rate_limit_event, etc.
+		if msg == nil {
+			continue
 		}
 		messages = append(messages, msg)
 	}

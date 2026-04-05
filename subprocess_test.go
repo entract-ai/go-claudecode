@@ -1,7 +1,15 @@
 package claudecode
 
 import (
+	"context"
+	"encoding/json/jsontext"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +26,7 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Contains(t, args, "stream-json")
 		assert.Contains(t, args, "--verbose")
 		assert.Contains(t, args, "--system-prompt")
-		assert.Contains(t, args, "--setting-sources")
+		assert.NotContains(t, args, "--setting-sources")
 	})
 
 	t.Run("with tools", func(t *testing.T) {
@@ -76,6 +84,23 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "Extra context", args[idx+1])
 	})
 
+	t.Run("with system prompt file", func(t *testing.T) {
+		opts := applyOptions(WithSystemPromptFile("/path/to/prompt.md"))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		// Should emit --system-prompt-file with the path
+		assert.Contains(t, args, "--system-prompt-file")
+		idx := indexOf(args, "--system-prompt-file")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "/path/to/prompt.md", args[idx+1])
+
+		// Should NOT emit --system-prompt or --append-system-prompt
+		assert.NotContains(t, args, "--system-prompt")
+		assert.NotContains(t, args, "--append-system-prompt")
+	})
+
 	t.Run("with model", func(t *testing.T) {
 		opts := applyOptions(WithModel("claude-sonnet-4-5"))
 		transport := NewSubprocessTransport(opts)
@@ -98,6 +123,17 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "bypassPermissions", args[idx+1])
 	})
 
+	t.Run("with dontAsk permission mode", func(t *testing.T) {
+		opts := applyOptions(WithPermissionMode(PermissionDontAsk))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.Contains(t, args, "--permission-mode")
+		idx := indexOf(args, "--permission-mode")
+		assert.Equal(t, "dontAsk", args[idx+1])
+	})
+
 	t.Run("with session options", func(t *testing.T) {
 		opts := applyOptions(
 			WithContinueConversation(),
@@ -116,6 +152,28 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Equal(t, "session_123", args[idx+1])
 	})
 
+	t.Run("with session ID", func(t *testing.T) {
+		opts := applyOptions(WithSessionID("550e8400-e29b-41d4-a716-446655440000"))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.Contains(t, args, "--session-id")
+		idx := indexOf(args, "--session-id")
+		assert.GreaterOrEqual(t, idx, 0)
+		assert.Equal(t, "550e8400-e29b-41d4-a716-446655440000", args[idx+1])
+	})
+
+	t.Run("session ID not set by default", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--session-id",
+			"--session-id should not be present when unset")
+	})
+
 	t.Run("with limits", func(t *testing.T) {
 		opts := applyOptions(
 			WithMaxTurns(10),
@@ -129,6 +187,27 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		assert.Contains(t, args, "--max-turns")
 		assert.Contains(t, args, "--max-budget-usd")
 		assert.Contains(t, args, "--max-thinking-tokens")
+	})
+
+	t.Run("with task budget", func(t *testing.T) {
+		opts := applyOptions(WithTaskBudget(100000))
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		idx := indexOf(args, "--task-budget")
+		assert.GreaterOrEqual(t, idx, 0, "--task-budget should be present")
+		assert.Equal(t, "100000", args[idx+1])
+	})
+
+	t.Run("without task budget", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--task-budget",
+			"--task-budget should not be present when unset")
 	})
 
 	t.Run("with allowed and disallowed tools", func(t *testing.T) {
@@ -320,9 +399,16 @@ func TestSubprocessTransport_buildArgs(t *testing.T) {
 		args, err := transport.buildArgs()
 		require.NoError(t, err)
 
-		idx := indexOf(args, "--setting-sources")
-		assert.GreaterOrEqual(t, idx, 0)
-		assert.Equal(t, "", args[idx+1])
+		assert.NotContains(t, args, "--setting-sources")
+	})
+
+	t.Run("setting sources omitted when not provided", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		args, err := transport.buildArgs()
+		require.NoError(t, err)
+
+		assert.NotContains(t, args, "--setting-sources")
 	})
 }
 
@@ -510,6 +596,119 @@ func TestSubprocessTransport_buildArgs_PluginTypes(t *testing.T) {
 	})
 }
 
+// envToMap converts a []string env list (KEY=VALUE entries) to a map.
+// Later entries override earlier ones, matching exec.Cmd behavior.
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, entry := range env {
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			m[k] = v
+		}
+	}
+	return m
+}
+
+func TestSubprocessTransport_buildEnv(t *testing.T) {
+	t.Run("CLAUDE_CODE_ENTRYPOINT defaults to sdk-go", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "sdk-go", m["CLAUDE_CODE_ENTRYPOINT"])
+	})
+
+	t.Run("caller can override CLAUDE_CODE_ENTRYPOINT via options env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDE_CODE_ENTRYPOINT", "custom-caller"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "custom-caller", m["CLAUDE_CODE_ENTRYPOINT"],
+			"user-provided CLAUDE_CODE_ENTRYPOINT should override the sdk-go default")
+	})
+
+	t.Run("CLAUDE_AGENT_SDK_VERSION cannot be overridden by user env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDE_AGENT_SDK_VERSION", "user-hacked-version"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, SDKVersion, m["CLAUDE_AGENT_SDK_VERSION"],
+			"CLAUDE_AGENT_SDK_VERSION must always reflect the actual SDK version")
+	})
+
+	t.Run("user env vars are passed through", func(t *testing.T) {
+		opts := applyOptions(WithEnv("MY_CUSTOM_VAR", "hello"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "hello", m["MY_CUSTOM_VAR"])
+	})
+
+	t.Run("cwd sets PWD", func(t *testing.T) {
+		opts := applyOptions(WithCWD("/some/dir"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "/some/dir", m["PWD"])
+	})
+
+	t.Run("enableFileCheckpointing sets env var", func(t *testing.T) {
+		opts := applyOptions(WithEnableFileCheckpointing())
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "true", m["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"])
+	})
+
+	t.Run("CLAUDECODE env var is filtered from base env", func(t *testing.T) {
+		opts := applyOptions()
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin", "CLAUDECODE=1", "HOME=/home/test"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.NotContains(t, m, "CLAUDECODE",
+			"CLAUDECODE must be filtered from the inherited environment")
+		assert.Equal(t, "/usr/bin", m["PATH"],
+			"other env vars must be preserved")
+		assert.Equal(t, "/home/test", m["HOME"],
+			"other env vars must be preserved")
+	})
+
+	t.Run("CLAUDECODE can be set via options env", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDECODE", "1"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "1", m["CLAUDECODE"],
+			"explicit CLAUDECODE via options.env should be respected")
+	})
+
+	t.Run("CLAUDECODE in base env is filtered but options env overrides", func(t *testing.T) {
+		opts := applyOptions(WithEnv("CLAUDECODE", "custom"))
+		transport := NewSubprocessTransport(opts)
+		baseEnv := []string{"PATH=/usr/bin", "CLAUDECODE=1"}
+		env := transport.buildEnv(baseEnv)
+		m := envToMap(env)
+
+		assert.Equal(t, "custom", m["CLAUDECODE"],
+			"options.env CLAUDECODE should take effect even when base env had CLAUDECODE=1")
+	})
+}
+
 func indexOf(slice []string, item string) int {
 	for i, v := range slice {
 		if v == item {
@@ -518,3 +717,339 @@ func indexOf(slice []string, item string) int {
 	}
 	return -1
 }
+
+// setupTransportWithProcess creates a SubprocessTransport with a real exec.Cmd
+// already started. This simulates the state after Connect() without needing
+// the full CLI version check / argument building.
+func setupTransportWithProcess(t *testing.T, cmd *exec.Cmd) *SubprocessTransport {
+	t.Helper()
+
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+
+	require.NoError(t, cmd.Start())
+
+	transport := &SubprocessTransport{
+		options:    applyOptions(),
+		cmd:        cmd,
+		stdin:      stdin,
+		stdout:     stdout,
+		ready:      true,
+		stderrDone: make(chan struct{}),
+	}
+	// stderr not piped through callback, so mark done immediately
+	close(transport.stderrDone)
+	return transport
+}
+
+// setupTransportWithReader creates a SubprocessTransport with a real exec.Cmd
+// and a messageReader (jsontext.Decoder). Unlike setupTransportWithProcess, this
+// also wires up the JSON decoder so ReadMessages can be tested end-to-end.
+func setupTransportWithReader(t *testing.T, cmd *exec.Cmd) *SubprocessTransport {
+	t.Helper()
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.messageReader = jsontext.NewDecoder(newJSONLineFilterReader(transport.stdout))
+	return transport
+}
+
+func TestSubprocessTransport_ReadMessages_SkipsNonJSONLines(t *testing.T) {
+	// Simulate the bug from upstream Python commit c290bbf:
+	// when DEBUG is set, the CLI emits [SandboxDebug] lines to stdout
+	// before any JSON messages. Without filtering, these corrupt the
+	// JSON parser and cause zero messages to be parsed.
+	script := `printf '[SandboxDebug] Seccomp filtering not available\n'
+printf '{"type":"system","subtype":"init"}\n'
+printf '[SandboxDebug] another debug line\n'
+printf 'WARNING: something unexpected\n'
+printf '{"type":"result","subtype":"success","session_id":"s1","duration_ms":0,"duration_api_ms":0,"is_error":false,"num_turns":0}\n'
+`
+	cmd := exec.Command("sh", "-c", script)
+	transport := setupTransportWithReader(t, cmd)
+	defer transport.Close(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var messages []Message
+	for msg := range transport.ReadMessages(ctx) {
+		if msg.Err != nil {
+			t.Fatalf("unexpected error: %v", msg.Err)
+		}
+		messages = append(messages, msg.Message)
+	}
+
+	require.Len(t, messages, 2, "should parse exactly 2 JSON messages, skipping debug lines")
+
+	sys, ok := messages[0].(*SystemMessage)
+	require.True(t, ok)
+	assert.Equal(t, "init", sys.Subtype)
+
+	result, ok := messages[1].(*ResultMessage)
+	require.True(t, ok)
+	assert.Equal(t, "success", result.Subtype)
+}
+
+func TestSubprocessTransport_ReadMessages_AllJSON(t *testing.T) {
+	// When there are no non-JSON lines, all messages should parse normally.
+	script := `printf '{"type":"system","subtype":"init"}\n'
+printf '{"type":"result","subtype":"success","session_id":"s1","duration_ms":0,"duration_api_ms":0,"is_error":false,"num_turns":0}\n'
+`
+	cmd := exec.Command("sh", "-c", script)
+	transport := setupTransportWithReader(t, cmd)
+	defer transport.Close(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var messages []Message
+	for msg := range transport.ReadMessages(ctx) {
+		if msg.Err != nil {
+			t.Fatalf("unexpected error: %v", msg.Err)
+		}
+		messages = append(messages, msg.Message)
+	}
+
+	require.Len(t, messages, 2)
+}
+
+func TestSubprocessTransport_Close_GracefulExit(t *testing.T) {
+	// "cat" reads from stdin and exits when stdin is closed.
+	// With a generous grace period, the process should exit on its own
+	// and Close should NOT need to send any signal.
+	cmd := exec.Command("cat")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// The process should exit very quickly after stdin is closed
+	// (well under the 5s grace period).
+	assert.Less(t, elapsed, 2*time.Second,
+		"graceful exit should complete quickly, not wait the full grace period")
+
+	// Verify the process actually exited
+	assert.True(t, transport.waited || transport.cmd == nil)
+}
+
+func TestSubprocessTransport_Close_TimeoutSendsSIGTERM(t *testing.T) {
+	// "sleep 999" ignores stdin close and will hang indefinitely.
+	// With a short grace period, Close should time out and send SIGTERM.
+	// "sleep" does not trap SIGTERM, so it exits immediately when signaled.
+	cmd := exec.Command("sleep", "999")
+
+	transport := setupTransportWithProcess(t, cmd)
+	// Use a very short grace period so the test is fast
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+
+	pid := cmd.Process.Pid
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete in roughly the grace period (plus some slack for cleanup).
+	// "sleep" responds to SIGTERM immediately, so no SIGKILL escalation is needed.
+	assert.Less(t, elapsed, 3*time.Second,
+		"should not hang much beyond the grace period")
+	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond,
+		"should have waited at least the grace period before signaling")
+
+	// Verify process is no longer running. Sending signal 0 to a dead
+	// process returns an error.
+	err = syscall.Kill(pid, 0)
+	assert.Error(t, err, "process should no longer be running after Close")
+}
+
+func TestSubprocessTransport_Close_SIGKILLAfterSIGTERM(t *testing.T) {
+	// This process traps SIGTERM and blocks indefinitely. After the SIGTERM
+	// grace period expires, Close must escalate to SIGKILL.
+	script := `trap '' TERM; sleep 999`
+	cmd := exec.Command("sh", "-c", script)
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+	transport.sigtermGracePeriod = 100 * time.Millisecond
+
+	pid := cmd.Process.Pid
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete after both grace periods (stdin + SIGTERM) but not hang.
+	assert.Less(t, elapsed, 3*time.Second,
+		"Close must not hang when SIGTERM handler blocks; SIGKILL should terminate it")
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond,
+		"should have waited at least the stdin grace + SIGTERM grace periods")
+
+	// Verify process is no longer running.
+	err = syscall.Kill(pid, 0)
+	assert.Error(t, err, "process should be dead after SIGKILL")
+}
+
+func TestSubprocessTransport_Close_NoSIGKILLWhenSIGTERMSucceeds(t *testing.T) {
+	// "sleep 999" does not trap SIGTERM, so it exits immediately when
+	// signaled. Close should NOT escalate to SIGKILL.
+	cmd := exec.Command("sleep", "999")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 100 * time.Millisecond
+	transport.sigtermGracePeriod = 100 * time.Millisecond
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should complete after the stdin grace period and a fast SIGTERM response.
+	// The SIGTERM grace period should NOT be fully consumed because "sleep"
+	// exits immediately on SIGTERM.
+	assert.Less(t, elapsed, 2*time.Second,
+		"should complete quickly when SIGTERM succeeds; no SIGKILL timeout needed")
+}
+
+func TestSubprocessTransport_Close_AlreadyExited(t *testing.T) {
+	// "true" exits immediately with code 0. By the time Close runs,
+	// the process has already exited.
+	cmd := exec.Command("true")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	// Wait a moment for the "true" command to finish
+	time.Sleep(50 * time.Millisecond)
+
+	// Call cmd.Wait() to reap the process before Close, simulating the
+	// case where ReadMessages already reaped it.
+	_ = cmd.Wait()
+	transport.waited = true
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should be nearly instant -- no grace period wait for already-exited process
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"should not wait for an already-exited process")
+}
+
+func TestSubprocessTransport_Close_ProcessExitedButNotYetWaited(t *testing.T) {
+	// "true" exits immediately, but we do NOT call cmd.Wait() first.
+	// The process has exited at the OS level but Close hasn't reaped it yet.
+	// Close should detect this quickly via the grace period wait returning
+	// immediately (since the process is already dead).
+	cmd := exec.Command("true")
+
+	transport := setupTransportWithProcess(t, cmd)
+	transport.shutdownGracePeriod = 5 * time.Second
+
+	// Wait a moment for "true" to actually exit
+	time.Sleep(50 * time.Millisecond)
+
+	start := time.Now()
+	err := transport.Close(context.Background())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+
+	// Should be nearly instant because cmd.Wait() returns immediately
+	// for a process that has already exited
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"should detect already-exited process quickly via Wait()")
+}
+
+func TestDefaultShutdownGracePeriod(t *testing.T) {
+	// Verify the default grace period is 5 seconds as specified by upstream.
+	assert.Equal(t, 5*time.Second, DefaultShutdownGracePeriod)
+}
+
+func TestSubprocessTransport_Close_DefaultGracePeriod(t *testing.T) {
+	// Verify that a newly created transport uses the default grace period.
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+	assert.Equal(t, time.Duration(0), transport.shutdownGracePeriod,
+		"zero value means use default")
+}
+
+// writeFakeCLI creates a shell script in dir that prints the given version string
+// when invoked with "-v". Returns the full path to the script.
+func writeFakeCLI(t *testing.T, dir, versionOutput string) string {
+	t.Helper()
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\necho '" + versionOutput + "'\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
+}
+
+func TestCheckVersion_ErrorIncludesCLIPath(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "1.0.0 (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	require.Error(t, err, "version below minimum should return an error")
+	assert.Contains(t, err.Error(), "1.0.0", "error should include the detected version")
+	assert.Contains(t, err.Error(), MinimumCLIVersion, "error should include the minimum version")
+	assert.Contains(t, err.Error(), cliPath, "error should include the CLI path")
+}
+
+func TestCheckVersion_NoErrorForCurrentVersion(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "99.99.99 (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "version at or above minimum should not return an error")
+}
+
+func TestCheckVersion_NoErrorForExactMinimumVersion(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, MinimumCLIVersion+" (Claude Code)")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "version equal to minimum should not return an error")
+}
+
+func TestCheckVersion_SilentOnUnparseableOutput(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := writeFakeCLI(t, dir, "not a version string")
+
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	err := transport.checkVersion(context.Background(), cliPath)
+	assert.NoError(t, err, "unparseable version output should be silently ignored")
+}
+
+func TestCheckVersion_SilentOnExecutionFailure(t *testing.T) {
+	opts := applyOptions()
+	transport := NewSubprocessTransport(opts)
+
+	// Use a non-existent path to trigger execution failure
+	err := transport.checkVersion(context.Background(), "/nonexistent/path/to/claude")
+	assert.NoError(t, err, "execution failure should be silently ignored")
+}
+

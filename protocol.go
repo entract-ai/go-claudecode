@@ -37,6 +37,13 @@ type ControlRouter struct {
 	// MCP server registry for SDK servers
 	sdkMCPServers map[string]*MCPSDKConfig
 
+	// In-flight control request handlers, keyed by request_id.
+	// Each entry holds a cancel function that, when called, cancels the
+	// handler's context. Used by control_cancel_request to stop handlers
+	// that the CLI has abandoned.
+	inflightRequests map[string]context.CancelFunc
+	inflightWg       sync.WaitGroup
+
 	// Initialization state
 	initialized          bool
 	initializationResult map[string]any
@@ -55,6 +62,7 @@ func NewControlRouter(transport Transport, opts *Options) *ControlRouter {
 		pendingResponses: make(map[string]chan controlResult),
 		hookCallbacks:    make(map[string]HookCallback),
 		sdkMCPServers:    opts.sdkMCPServers,
+		inflightRequests: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -148,12 +156,61 @@ func (r *ControlRouter) HandleMessage(ctx context.Context, msg Message, raw []by
 	case *ControlResponse:
 		return true, r.handleControlResponse(m, raw)
 	case *ControlRequest:
-		return true, r.handleControlRequest(ctx, m, raw)
+		r.spawnControlRequestHandler(ctx, m, raw)
+		return true, nil
 	case *ControlCancelRequest:
-		// Ignore cancel requests like Python does (cancellation not yet implemented)
+		r.cancelInflightRequest(m.RequestID)
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+// spawnControlRequestHandler runs handleControlRequest in a goroutine with a
+// cancellable context, tracking the request for potential cancellation.
+func (r *ControlRouter) spawnControlRequestHandler(ctx context.Context, msg *ControlRequest, raw []byte) {
+	reqID := msg.RequestID
+	reqCtx, cancel := context.WithCancel(ctx)
+
+	r.mu.Lock()
+	r.inflightRequests[reqID] = cancel
+	r.mu.Unlock()
+
+	r.inflightWg.Add(1)
+	go func() {
+		defer r.inflightWg.Done()
+		defer func() {
+			r.mu.Lock()
+			delete(r.inflightRequests, reqID)
+			r.mu.Unlock()
+			cancel()
+		}()
+		// handleControlRequest writes the response internally; errors
+		// from it are protocol-level (e.g. bad JSON) and not recoverable.
+		_ = r.handleControlRequest(reqCtx, msg, raw)
+	}()
+}
+
+// WaitInflight blocks until all in-flight control request handler goroutines
+// have returned. Call this during shutdown after the message loop has ended
+// to ensure handler goroutines (especially hook callbacks) have completed or
+// been cancelled.
+func (r *ControlRouter) WaitInflight() {
+	r.inflightWg.Wait()
+}
+
+// cancelInflightRequest cancels the handler for the given request_id, if any.
+// Unknown request_ids are silently ignored.
+func (r *ControlRouter) cancelInflightRequest(reqID string) {
+	r.mu.Lock()
+	cancel, ok := r.inflightRequests[reqID]
+	if ok {
+		delete(r.inflightRequests, reqID)
+	}
+	r.mu.Unlock()
+
+	if ok {
+		cancel()
 	}
 }
 
@@ -209,6 +266,12 @@ func (r *ControlRouter) handleControlRequest(ctx context.Context, msg *ControlRe
 		responseErr = fmt.Errorf("unsupported control request subtype: %s", request.Request.Subtype)
 	}
 
+	// If the context was cancelled (via control_cancel_request), the CLI
+	// has already abandoned this request. Don't write a response.
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	return r.sendControlResponse(ctx, request.RequestID, responseData, responseErr)
 }
 
@@ -223,6 +286,8 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 			Input                 map[string]any `json:"input"`
 			PermissionSuggestions []any          `json:"permission_suggestions"`
 			BlockedPath           string         `json:"blocked_path"`
+			ToolUseID             string         `json:"tool_use_id"`
+			AgentID               string         `json:"agent_id"`
 		} `json:"request"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
@@ -232,6 +297,8 @@ func (r *ControlRouter) handleCanUseTool(ctx context.Context, raw []byte) (map[s
 	permCtx := ToolPermissionContext{
 		Suggestions: parsePermissionSuggestions(request.Request.PermissionSuggestions),
 		BlockedPath: request.Request.BlockedPath,
+		ToolUseID:   request.Request.ToolUseID,
+		AgentID:     request.Request.AgentID,
 	}
 
 	result, err := r.options.canUseTool(ctx, request.Request.ToolName, request.Request.Input, permCtx)
@@ -358,6 +425,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolName:      getString(input, "tool_name"),
 			ToolInput:     getMap(input, "tool_input"),
 			ToolUseID:     getString(input, "tool_use_id"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "PostToolUse":
 		return PostToolUseInput{
@@ -366,6 +435,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolInput:     getMap(input, "tool_input"),
 			ToolResponse:  input["tool_response"],
 			ToolUseID:     getString(input, "tool_use_id"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "UserPromptSubmit":
 		return UserPromptSubmitInput{
@@ -385,6 +456,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolUseID:     getString(input, "tool_use_id"),
 			Error:         getString(input, "error"),
 			IsInterrupt:   getBool(input, "is_interrupt"),
+			AgentID:       getStringPtr(input, "agent_id"),
+			AgentType:     getStringPtr(input, "agent_type"),
 		}
 	case "Notification":
 		return NotificationInput{
@@ -413,6 +486,8 @@ func parseHookInput(input map[string]any) HookInput {
 			ToolName:              getString(input, "tool_name"),
 			ToolInput:             getMap(input, "tool_input"),
 			PermissionSuggestions: getSlice(input, "permission_suggestions"),
+			AgentID:               getStringPtr(input, "agent_id"),
+			AgentType:             getStringPtr(input, "agent_type"),
 		}
 	case "PreCompact":
 		return PreCompactInput{
@@ -423,6 +498,13 @@ func parseHookInput(input map[string]any) HookInput {
 	default:
 		return base
 	}
+}
+
+func getStringPtr(m map[string]any, key string) *string {
+	if v, ok := m[key].(string); ok {
+		return &v
+	}
+	return nil
 }
 
 func getString(m map[string]any, key string) string {
@@ -583,9 +665,73 @@ func (r *ControlRouter) SetModel(ctx context.Context, model string) error {
 	return err
 }
 
-// GetMCPStatus returns the MCP server status.
-func (r *ControlRouter) GetMCPStatus(ctx context.Context) (map[string]any, error) {
-	return r.sendControlRequest(ctx, map[string]any{"subtype": "mcp_status"}, DefaultControlTimeout)
+// GetMCPStatus returns the MCP server connection status.
+func (r *ControlRouter) GetMCPStatus(ctx context.Context) (McpStatusResponse, error) {
+	raw, err := r.sendControlRequest(ctx, map[string]any{"subtype": "mcp_status"}, DefaultControlTimeout)
+	if err != nil {
+		return McpStatusResponse{}, err
+	}
+
+	// Re-marshal the raw response map and decode into the typed struct.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return McpStatusResponse{}, fmt.Errorf("marshal mcp_status response: %w", err)
+	}
+
+	var resp McpStatusResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return McpStatusResponse{}, fmt.Errorf("decode mcp_status response: %w", err)
+	}
+	return resp, nil
+}
+
+// GetContextUsage returns a breakdown of current context window usage by category.
+func (r *ControlRouter) GetContextUsage(ctx context.Context) (ContextUsageResponse, error) {
+	raw, err := r.sendControlRequest(ctx, map[string]any{"subtype": "get_context_usage"}, DefaultControlTimeout)
+	if err != nil {
+		return ContextUsageResponse{}, err
+	}
+
+	// Re-marshal the raw response map and decode into the typed struct.
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return ContextUsageResponse{}, fmt.Errorf("marshal get_context_usage response: %w", err)
+	}
+
+	var resp ContextUsageResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return ContextUsageResponse{}, fmt.Errorf("decode get_context_usage response: %w", err)
+	}
+	return resp, nil
+}
+
+// ReconnectMCPServer sends a control request to reconnect a disconnected or
+// failed MCP server.
+func (r *ControlRouter) ReconnectMCPServer(ctx context.Context, serverName string) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype":    "mcp_reconnect",
+		"serverName": serverName,
+	}, DefaultControlTimeout)
+	return err
+}
+
+// ToggleMCPServer sends a control request to enable or disable an MCP server.
+func (r *ControlRouter) ToggleMCPServer(ctx context.Context, serverName string, enabled bool) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype":    "mcp_toggle",
+		"serverName": serverName,
+		"enabled":    enabled,
+	}, DefaultControlTimeout)
+	return err
+}
+
+// StopTask sends a control request to stop a running task.
+func (r *ControlRouter) StopTask(ctx context.Context, taskID string) error {
+	_, err := r.sendControlRequest(ctx, map[string]any{
+		"subtype": "stop_task",
+		"task_id": taskID,
+	}, DefaultControlTimeout)
+	return err
 }
 
 // RewindFiles rewinds tracked files to a specific user message.

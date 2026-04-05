@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -21,16 +23,34 @@ const (
 	// MinimumCLIVersion is the minimum supported Claude Code CLI version.
 	MinimumCLIVersion = "2.0.0"
 
-	// DefaultStreamCloseTimeout is the default timeout for closing stdin.
-	DefaultStreamCloseTimeout = 60 * time.Second
-
 	// SDKVersion is the version of this SDK.
 	SDKVersion = "0.1.0"
+
+	// DefaultShutdownGracePeriod is how long Close waits for the subprocess
+	// to exit on its own after stdin is closed, before sending SIGTERM.
+	// The subprocess needs time to flush its session file after receiving
+	// EOF on stdin. Without this grace period, SIGTERM can interrupt the
+	// write and cause the last assistant message to be lost.
+	DefaultShutdownGracePeriod = 5 * time.Second
+
+	// DefaultSigtermGracePeriod is how long Close waits after sending
+	// SIGTERM before escalating to SIGKILL. If the subprocess has a
+	// SIGTERM handler that blocks (e.g. waiting for an MCP server or
+	// subagent to exit), we must not hang forever.
+	DefaultSigtermGracePeriod = 5 * time.Second
 )
 
 // SubprocessTransport implements Transport using the Claude Code CLI subprocess.
 type SubprocessTransport struct {
 	options *Options
+
+	// shutdownGracePeriod is how long Close waits for the process to exit
+	// on its own before sending SIGTERM. Zero means use DefaultShutdownGracePeriod.
+	shutdownGracePeriod time.Duration
+
+	// sigtermGracePeriod is how long Close waits after sending SIGTERM
+	// before escalating to SIGKILL. Zero means use DefaultSigtermGracePeriod.
+	sigtermGracePeriod time.Duration
 
 	mu            sync.Mutex
 	cmd           *exec.Cmd
@@ -54,6 +74,70 @@ func NewSubprocessTransport(opts *Options) *SubprocessTransport {
 	}
 }
 
+// jsonLineFilterReader wraps an io.Reader and skips non-JSON lines.
+//
+// The Claude Code CLI may emit non-JSON diagnostic lines to stdout
+// (e.g. "[SandboxDebug] ..." when the DEBUG env var is set). These
+// corrupt jsontext.Decoder's parse state, causing it to return an error
+// instead of the valid JSON objects that follow.
+//
+// This reader reads the underlying stream line by line and drops any
+// line that does not start with '{'. Empty lines and whitespace-only
+// lines are passed through (jsontext.Decoder handles whitespace natively).
+//
+// See upstream Python SDK commit c290bbf for the equivalent fix.
+type jsonLineFilterReader struct {
+	scanner *bufio.Scanner
+	buf     []byte // unread portion of the current line
+}
+
+// newJSONLineFilterReader wraps r so that non-JSON lines are silently
+// dropped before reaching the JSON decoder.
+func newJSONLineFilterReader(r io.Reader) *jsonLineFilterReader {
+	s := bufio.NewScanner(r)
+	// Increase buffer size to handle large JSON lines (e.g., assistant
+	// responses that routinely exceed the default 64KB limit).
+	// Matches the pattern used in ParseTranscript.
+	s.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	return &jsonLineFilterReader{
+		scanner: s,
+	}
+}
+
+func (f *jsonLineFilterReader) Read(p []byte) (int, error) {
+	for {
+		// Drain any buffered data from a previous line first.
+		if len(f.buf) > 0 {
+			n := copy(p, f.buf)
+			f.buf = f.buf[n:]
+			return n, nil
+		}
+
+		// Read the next line from the underlying reader.
+		if !f.scanner.Scan() {
+			if err := f.scanner.Err(); err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
+		}
+
+		line := f.scanner.Text()
+
+		// Skip non-JSON lines: any non-empty line that does not
+		// start with '{' cannot be the start of a JSON object.
+		// Empty/whitespace-only lines are preserved because
+		// jsontext.Decoder handles whitespace between values.
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) > 0 && trimmed[0] != '{' {
+			continue
+		}
+
+		// Re-append the newline so jsontext.Decoder sees the same
+		// byte stream it would without filtering.
+		f.buf = append([]byte(line), '\n')
+	}
+}
+
 // Connect starts the Claude Code CLI subprocess.
 func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
@@ -72,7 +156,7 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	if os.Getenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK") == "" {
 		if err := t.checkVersion(ctx, cliPath); err != nil {
 			// Log warning but don't fail
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			slog.Warn("CLI version check", "error", err)
 		}
 	}
 
@@ -93,30 +177,17 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 	}
 
 	// Set up environment - preserve sandbox-provided env vars (e.g., TMPDIR) if present
-	var env []string
+	var baseEnv []string
 	if t.cmd.Env != nil {
-		env = t.cmd.Env
+		baseEnv = t.cmd.Env
 	} else {
-		env = os.Environ()
+		baseEnv = os.Environ()
 	}
-	env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
-	env = append(env, fmt.Sprintf("CLAUDE_AGENT_SDK_VERSION=%s", SDKVersion))
+	t.cmd.Env = t.buildEnv(baseEnv)
 
 	if t.options.cwd != "" {
-		env = append(env, fmt.Sprintf("PWD=%s", t.options.cwd))
 		t.cmd.Dir = t.options.cwd
 	}
-
-	if t.options.enableFileCheckpointing {
-		env = append(env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
-	}
-
-	// Add user-provided environment variables
-	for k, v := range t.options.env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	t.cmd.Env = env
 
 	// Set up pipes
 	t.stdin, err = t.cmd.StdinPipe()
@@ -147,8 +218,10 @@ func (t *SubprocessTransport) Connect(ctx context.Context) error {
 		return fmt.Errorf("start process: %w", err)
 	}
 
-	// Set up message reader - jsontext.Decoder handles streaming natively
-	t.messageReader = jsontext.NewDecoder(t.stdout)
+	// Set up message reader. Wrap stdout in a filter that drops non-JSON
+	// diagnostic lines (e.g. "[SandboxDebug] ...") which would otherwise
+	// corrupt the JSON decoder's parse state.
+	t.messageReader = jsontext.NewDecoder(newJSONLineFilterReader(t.stdout))
 
 	// Handle stderr in background (only when piped through callback)
 	if t.options.stderrCallback != nil {
@@ -241,6 +314,12 @@ func (t *SubprocessTransport) ReadMessages(ctx context.Context) <-chan MessageOr
 				return
 			}
 
+			// Skip unknown message types (parseMessage returns nil, nil).
+			// This makes the SDK forward-compatible with new CLI message types.
+			if msg == nil {
+				continue
+			}
+
 			ch <- MessageOrError{Message: msg, Raw: rawMsg}
 		}
 	}()
@@ -290,6 +369,17 @@ func (t *SubprocessTransport) EndInput(ctx context.Context) error {
 }
 
 // Close closes the transport and releases resources.
+//
+// The shutdown sequence is:
+//  1. Close stdin (signals EOF to subprocess)
+//  2. Wait up to shutdownGracePeriod (default 5s) for graceful exit
+//  3. Send SIGTERM
+//  4. Wait up to sigtermGracePeriod (default 5s) for SIGTERM to take effect
+//  5. Send SIGKILL if process is still alive (cannot be caught or blocked)
+//
+// The grace period after stdin EOF gives the subprocess time to flush its
+// session file. The SIGKILL fallback prevents hanging indefinitely when the
+// subprocess has a SIGTERM handler that blocks.
 func (t *SubprocessTransport) Close(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -300,7 +390,8 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 	t.closed = true
 	t.ready = false
 
-	// Close stdin if not already closed
+	// Close stdin if not already closed. This signals EOF to the subprocess,
+	// which should trigger its own graceful shutdown.
 	if !t.stdinClosed && t.stdin != nil {
 		t.stdin.Close()
 		t.stdinClosed = true
@@ -312,12 +403,47 @@ func (t *SubprocessTransport) Close(ctx context.Context) error {
 	case <-time.After(time.Second):
 	}
 
-	// Kill process if still running, but only wait if not already waited
-	if t.cmd != nil && t.cmd.Process != nil {
-		t.cmd.Process.Kill()
-		if !t.waited {
+	// Wait for graceful shutdown, then terminate if needed.
+	if t.cmd != nil && t.cmd.Process != nil && !t.waited {
+		grace := t.shutdownGracePeriod
+		if grace == 0 {
+			grace = DefaultShutdownGracePeriod
+		}
+
+		// Wait for the process to exit on its own within the grace period.
+		// We run cmd.Wait() in a goroutine because it blocks, and select
+		// on either it completing or the timer expiring.
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- t.cmd.Wait()
+		}()
+
+		sigtermGrace := t.sigtermGracePeriod
+		if sigtermGrace == 0 {
+			sigtermGrace = DefaultSigtermGracePeriod
+		}
+
+		select {
+		case <-waitDone:
+			// Process exited on its own within the grace period.
 			t.waited = true
-			t.cmd.Wait() // Ignore error since we're closing anyway
+		case <-time.After(grace):
+			// Grace period expired -- send SIGTERM and wait for cleanup.
+			_ = t.cmd.Process.Signal(syscall.SIGTERM)
+
+			// Wait for the process to respond to SIGTERM. If its signal
+			// handler blocks (e.g. waiting for an MCP server or subagent
+			// to exit), we must not hang forever -- escalate to SIGKILL.
+			select {
+			case <-waitDone:
+				// Process exited after SIGTERM.
+				t.waited = true
+			case <-time.After(sigtermGrace):
+				// SIGTERM handler blocked -- force kill (SIGKILL).
+				_ = t.cmd.Process.Kill()
+				<-waitDone
+				t.waited = true
+			}
 		}
 	}
 
@@ -381,7 +507,7 @@ func (t *SubprocessTransport) checkVersion(ctx context.Context, cliPath string) 
 
 	version := match[1]
 	if compareVersions(version, MinimumCLIVersion) < 0 {
-		return fmt.Errorf("claude code version %s is below minimum required version %s", version, MinimumCLIVersion)
+		return fmt.Errorf("claude code version %s at %s is below minimum required version %s", version, cliPath, MinimumCLIVersion)
 	}
 
 	return nil
@@ -395,7 +521,9 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 	args = append(args, "--verbose")
 
 	// System prompt handling
-	if t.options.systemPrompt != nil {
+	if t.options.systemPromptFile != "" {
+		args = append(args, "--system-prompt-file", t.options.systemPromptFile)
+	} else if t.options.systemPrompt != nil {
 		args = append(args, "--system-prompt", *t.options.systemPrompt)
 	} else if t.options.systemPromptAppend != "" {
 		args = append(args, "--append-system-prompt", t.options.systemPromptAppend)
@@ -431,6 +559,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--resume", t.options.resume)
 	}
 
+	if t.options.sessionID != "" {
+		args = append(args, "--session-id", t.options.sessionID)
+	}
+
 	if t.options.forkSession {
 		args = append(args, "--fork-session")
 	}
@@ -442,6 +574,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 
 	if t.options.maxBudgetUSD > 0 {
 		args = append(args, "--max-budget-usd", fmt.Sprintf("%f", t.options.maxBudgetUSD))
+	}
+
+	if t.options.taskBudget != nil {
+		args = append(args, "--task-budget", fmt.Sprintf("%d", *t.options.taskBudget))
 	}
 
 	// Resolve thinking tokens: WithThinking takes precedence over WithMaxThinkingTokens
@@ -521,12 +657,10 @@ func (t *SubprocessTransport) buildArgs() ([]string, error) {
 		args = append(args, "--settings", settingsValue)
 	}
 
-	// Setting sources
-	sources := ""
-	if t.options.settingSources != nil {
-		sources = strings.Join(t.options.settingSources, ",")
+	// Setting sources -- only emit when explicitly provided and non-empty
+	if len(t.options.settingSources) > 0 {
+		args = append(args, "--setting-sources", strings.Join(t.options.settingSources, ","))
 	}
-	args = append(args, "--setting-sources", sources)
 
 	// Add dirs
 	for _, dir := range t.options.addDirs {
@@ -697,6 +831,51 @@ func compareVersions(a, b string) int {
 	}
 
 	return 0
+}
+
+// buildEnv constructs the environment variable list for the subprocess.
+//
+// Merge order (last entry wins for duplicate keys):
+//  1. baseEnv (inherited process env or sandbox-provided env)
+//  2. CLAUDE_CODE_ENTRYPOINT default ("sdk-go") -- user env can override
+//  3. PWD, file checkpointing, and other SDK internals
+//  4. User-provided env vars (options.env)
+//  5. CLAUDE_AGENT_SDK_VERSION -- always SDK-controlled, cannot be overridden
+func (t *SubprocessTransport) buildEnv(baseEnv []string) []string {
+	// Filter out CLAUDECODE from the inherited environment so SDK-spawned
+	// subprocesses don't think they're running inside a Claude Code parent.
+	// Users who need it can still set it explicitly via options.env.
+	// See upstream Python SDK commit 5839ff9.
+	env := make([]string, 0, len(baseEnv))
+	for _, entry := range baseEnv {
+		if k, _, ok := strings.Cut(entry, "="); ok && k == "CLAUDECODE" {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	// CLAUDE_CODE_ENTRYPOINT acts as a default: set before user env
+	// so options.env can override it.
+	env = append(env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
+
+	if t.options.cwd != "" {
+		env = append(env, fmt.Sprintf("PWD=%s", t.options.cwd))
+	}
+
+	if t.options.enableFileCheckpointing {
+		env = append(env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
+	}
+
+	// User-provided environment variables
+	for k, v := range t.options.env {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// CLAUDE_AGENT_SDK_VERSION is always SDK-controlled: set after user env
+	// so it cannot be overridden.
+	env = append(env, fmt.Sprintf("CLAUDE_AGENT_SDK_VERSION=%s", SDKVersion))
+
+	return env
 }
 
 func parseVersion(v string) [3]int {

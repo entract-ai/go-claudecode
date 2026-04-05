@@ -26,6 +26,11 @@ type AssistantMessage struct {
 	Model           string                `json:"model"`
 	ParentToolUseID string                `json:"parent_tool_use_id,omitzero"`
 	Error           AssistantMessageError `json:"error,omitzero"`
+	Usage           map[string]any        `json:"usage,omitzero"`
+	MessageID       *string               `json:"message_id,omitzero"`
+	StopReason      *string               `json:"stop_reason,omitzero"`
+	SessionID       *string               `json:"session_id,omitzero"`
+	UUID            *string               `json:"uuid,omitzero"`
 }
 
 func (AssistantMessage) messageMarker() {}
@@ -50,18 +55,88 @@ type SystemMessage struct {
 
 func (SystemMessage) messageMarker() {}
 
+// TaskUsage represents usage statistics reported in task_progress and
+// task_notification messages.
+type TaskUsage struct {
+	TotalTokens int `json:"total_tokens"`
+	ToolUses    int `json:"tool_uses"`
+	DurationMS  int `json:"duration_ms"`
+}
+
+// TaskNotificationStatus represents the status of a completed task.
+type TaskNotificationStatus string
+
+const (
+	TaskNotificationStatusCompleted TaskNotificationStatus = "completed"
+	TaskNotificationStatusFailed    TaskNotificationStatus = "failed"
+	TaskNotificationStatusStopped   TaskNotificationStatus = "stopped"
+)
+
+// TaskStartedMessage is a system message emitted when a task starts.
+// It carries the same Subtype and Data fields as SystemMessage for
+// backward compatibility with code that inspects the raw payload.
+type TaskStartedMessage struct {
+	Subtype     string         `json:"subtype"`
+	Data        map[string]any `json:"data,omitzero"`
+	TaskID      string         `json:"task_id"`
+	Description string         `json:"description"`
+	UUID        string         `json:"uuid"`
+	SessionID   string         `json:"session_id"`
+	ToolUseID   *string        `json:"tool_use_id,omitzero"`
+	TaskType    *string        `json:"task_type,omitzero"`
+}
+
+func (TaskStartedMessage) messageMarker() {}
+
+// TaskProgressMessage is a system message emitted while a task is in progress.
+type TaskProgressMessage struct {
+	Subtype      string         `json:"subtype"`
+	Data         map[string]any `json:"data,omitzero"`
+	TaskID       string         `json:"task_id"`
+	Description  string         `json:"description"`
+	Usage        TaskUsage      `json:"usage"`
+	UUID         string         `json:"uuid"`
+	SessionID    string         `json:"session_id"`
+	ToolUseID    *string        `json:"tool_use_id,omitzero"`
+	LastToolName *string        `json:"last_tool_name,omitzero"`
+}
+
+func (TaskProgressMessage) messageMarker() {}
+
+// TaskNotificationMessage is a system message emitted when a task completes,
+// fails, or is stopped.
+type TaskNotificationMessage struct {
+	Subtype    string                 `json:"subtype"`
+	Data       map[string]any         `json:"data,omitzero"`
+	TaskID     string                 `json:"task_id"`
+	Status     TaskNotificationStatus `json:"status"`
+	OutputFile string                 `json:"output_file"`
+	Summary    string                 `json:"summary"`
+	UUID       string                 `json:"uuid"`
+	SessionID  string                 `json:"session_id"`
+	ToolUseID  *string                `json:"tool_use_id,omitzero"`
+	Usage      *TaskUsage             `json:"usage,omitzero"`
+}
+
+func (TaskNotificationMessage) messageMarker() {}
+
 // ResultMessage represents the final result of a conversation.
 type ResultMessage struct {
-	Subtype          string      `json:"subtype"`
-	DurationMS       int         `json:"duration_ms"`
-	DurationAPIMS    int         `json:"duration_api_ms"`
-	IsError          bool        `json:"is_error"`
-	NumTurns         int         `json:"num_turns"`
-	SessionID        string      `json:"session_id"`
-	TotalCostUSD     *float64    `json:"total_cost_usd,omitzero"`
-	Usage            *UsageStats `json:"usage,omitzero"`
-	Result           string      `json:"result,omitzero"`
-	StructuredOutput any         `json:"structured_output,omitzero"`
+	Subtype           string         `json:"subtype"`
+	DurationMS        int            `json:"duration_ms"`
+	DurationAPIMS     int            `json:"duration_api_ms"`
+	IsError           bool           `json:"is_error"`
+	NumTurns          int            `json:"num_turns"`
+	SessionID         string         `json:"session_id"`
+	StopReason        *string        `json:"stop_reason,omitzero"`
+	TotalCostUSD      *float64       `json:"total_cost_usd,omitzero"`
+	Usage             *UsageStats    `json:"usage,omitzero"`
+	Result            string         `json:"result,omitzero"`
+	StructuredOutput  any            `json:"structured_output,omitzero"`
+	ModelUsage        map[string]any `json:"modelUsage,omitzero"`
+	PermissionDenials []any          `json:"permission_denials,omitzero"`
+	Errors            []string       `json:"errors,omitzero"`
+	UUID              *string        `json:"uuid,omitzero"`
 }
 
 func (ResultMessage) messageMarker() {}
@@ -75,6 +150,46 @@ type StreamEvent struct {
 }
 
 func (StreamEvent) messageMarker() {}
+
+// RateLimitStatus represents the current rate limit status.
+type RateLimitStatus string
+
+const (
+	RateLimitStatusAllowed        RateLimitStatus = "allowed"
+	RateLimitStatusAllowedWarning RateLimitStatus = "allowed_warning"
+	RateLimitStatusRejected       RateLimitStatus = "rejected"
+)
+
+// RateLimitInfo contains rate limit status emitted by the CLI when
+// rate limit state changes.
+//
+// Field names follow Go conventions; JSON tags map to the camelCase
+// wire format used by the CLI. The Raw field preserves the original
+// dict including any fields not modeled above for forward compatibility.
+type RateLimitInfo struct {
+	Status                RateLimitStatus `json:"status"`
+	ResetsAt              *int64          `json:"resetsAt,omitzero"`
+	RateLimitType         *string         `json:"rateLimitType,omitzero"`
+	Utilization           *float64        `json:"utilization,omitzero"`
+	OverageStatus         *string         `json:"overageStatus,omitzero"`
+	OverageResetsAt       *int64          `json:"overageResetsAt,omitzero"`
+	OverageDisabledReason *string         `json:"overageDisabledReason,omitzero"`
+	Raw                   map[string]any  `json:"-"`
+}
+
+// RateLimitEvent is emitted when rate limit info changes.
+//
+// The CLI emits this whenever the rate limit status transitions (e.g.
+// from "allowed" to "allowed_warning"). Use this to warn users before
+// they hit a hard limit, or to gracefully back off when status is
+// "rejected".
+type RateLimitEvent struct {
+	RateLimitInfo RateLimitInfo `json:"rate_limit_info"`
+	UUID          string        `json:"uuid"`
+	SessionID     string        `json:"session_id"`
+}
+
+func (RateLimitEvent) messageMarker() {}
 
 // UsageStats represents token usage statistics.
 type UsageStats struct {
@@ -110,12 +225,22 @@ type ControlCancelRequest struct {
 func (ControlCancelRequest) messageMarker() {}
 
 // parseMessage parses a raw JSON message into a typed Message.
+// For recognized message types, it returns the parsed message.
+// For unrecognized message types, it returns (nil, nil) to signal that the
+// message should be silently skipped. This makes the SDK forward-compatible
+// with new CLI message types that it doesn't yet understand.
+// For genuinely broken messages (missing type field, malformed JSON), it
+// returns an error.
 func parseMessage(raw json.RawMessage) (Message, error) {
 	var typeHolder struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(raw, &typeHolder); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse message type: %v", err)}
+	}
+
+	if typeHolder.Type == "" {
+		return nil, &MessageParseError{Message: "message missing 'type' field"}
 	}
 
 	switch typeHolder.Type {
@@ -135,8 +260,12 @@ func parseMessage(raw json.RawMessage) (Message, error) {
 		return parseControlResponse(raw)
 	case "control_cancel_request":
 		return parseControlCancelRequest(raw)
+	case "rate_limit_event":
+		return parseRateLimitEvent(raw)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnknownMessageType, typeHolder.Type)
+		// Forward-compatible: skip unrecognized message types so newer
+		// CLI versions don't crash older SDK versions.
+		return nil, nil
 	}
 }
 
@@ -183,11 +312,16 @@ func parseUserMessage(raw json.RawMessage) (*UserMessage, error) {
 func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 	var holder struct {
 		Message struct {
-			Content json.RawMessage `json:"content"`
-			Model   string          `json:"model"`
+			Content    json.RawMessage `json:"content"`
+			Model      string          `json:"model"`
+			Usage      map[string]any  `json:"usage"`
+			ID         *string         `json:"id"`
+			StopReason *string         `json:"stop_reason"`
 		} `json:"message"`
-		ParentToolUseID string `json:"parent_tool_use_id"`
+		ParentToolUseID string                `json:"parent_tool_use_id"`
 		Error           AssistantMessageError `json:"error"`
+		SessionID       *string               `json:"session_id"`
+		UUID            *string               `json:"uuid"`
 	}
 	if err := json.Unmarshal(raw, &holder); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse assistant message: %v", err)}
@@ -203,27 +337,68 @@ func parseAssistantMessage(raw json.RawMessage) (*AssistantMessage, error) {
 		Model:           holder.Message.Model,
 		ParentToolUseID: holder.ParentToolUseID,
 		Error:           holder.Error,
+		Usage:           holder.Message.Usage,
+		MessageID:       holder.Message.ID,
+		StopReason:      holder.Message.StopReason,
+		SessionID:       holder.SessionID,
+		UUID:            holder.UUID,
 	}, nil
 }
 
-func parseSystemMessage(raw json.RawMessage) (*SystemMessage, error) {
-	var msg struct {
+func parseSystemMessage(raw json.RawMessage) (Message, error) {
+	var header struct {
 		Subtype string `json:"subtype"`
 	}
-	if err := json.Unmarshal(raw, &msg); err != nil {
+	if err := json.Unmarshal(raw, &header); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse system message: %v", err)}
 	}
 
-	// Store the entire raw message as data
+	// Store the entire raw message as data for all system message types.
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse system message data: %v", err)}
 	}
 
-	return &SystemMessage{
-		Subtype: msg.Subtype,
-		Data:    data,
-	}, nil
+	switch header.Subtype {
+	case "task_started":
+		return parseTaskStartedMessage(raw, data)
+	case "task_progress":
+		return parseTaskProgressMessage(raw, data)
+	case "task_notification":
+		return parseTaskNotificationMessage(raw, data)
+	default:
+		return &SystemMessage{
+			Subtype: header.Subtype,
+			Data:    data,
+		}, nil
+	}
+}
+
+func parseTaskStartedMessage(raw json.RawMessage, data map[string]any) (*TaskStartedMessage, error) {
+	var msg TaskStartedMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_started message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
+}
+
+func parseTaskProgressMessage(raw json.RawMessage, data map[string]any) (*TaskProgressMessage, error) {
+	var msg TaskProgressMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_progress message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
+}
+
+func parseTaskNotificationMessage(raw json.RawMessage, data map[string]any) (*TaskNotificationMessage, error) {
+	var msg TaskNotificationMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse task_notification message: %v", err)}
+	}
+	msg.Data = data
+	return &msg, nil
 }
 
 func parseResultMessage(raw json.RawMessage) (*ResultMessage, error) {
@@ -263,6 +438,24 @@ func parseControlCancelRequest(raw json.RawMessage) (*ControlCancelRequest, erro
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse control cancel request: %v", err)}
 	}
+	return &msg, nil
+}
+
+func parseRateLimitEvent(raw json.RawMessage) (*RateLimitEvent, error) {
+	var msg RateLimitEvent
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return nil, &MessageParseError{Message: fmt.Sprintf("failed to parse rate limit event: %v", err)}
+	}
+
+	// Preserve the raw rate_limit_info dict for forward compatibility
+	// with fields not yet modeled in RateLimitInfo.
+	var holder struct {
+		RateLimitInfo map[string]any `json:"rate_limit_info"`
+	}
+	if err := json.Unmarshal(raw, &holder); err == nil {
+		msg.RateLimitInfo.Raw = holder.RateLimitInfo
+	}
+
 	return &msg, nil
 }
 

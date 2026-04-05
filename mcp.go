@@ -3,6 +3,8 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 
 	"github.com/bpowers/go-claudecode/mcp"
 )
@@ -111,7 +113,7 @@ func handleSDKMCPRequest(ctx context.Context, config *MCPSDKConfig, message map[
 		// (text/image) and tool-level error semantics.
 		var structured map[string]any
 		if err := json.Unmarshal([]byte(output), &structured); err == nil && structured != nil {
-			if parsedContent := parseToolOutputContent(structured); len(parsedContent) > 0 {
+			if parsedContent := parseToolOutputContent(structured); parsedContent != nil {
 				result["content"] = parsedContent
 			}
 			if hasToolError(structured) {
@@ -179,9 +181,42 @@ func parseToolOutputContent(structured map[string]any) []map[string]any {
 				imageBlock["mimeType"] = mimeType
 			}
 			content = append(content, imageBlock)
+		case "resource_link":
+			var parts []string
+			if name, ok := block["name"].(string); ok && name != "" {
+				parts = append(parts, name)
+			}
+			if uri, ok := block["uri"].(string); ok && uri != "" {
+				parts = append(parts, uri)
+			}
+			if desc, ok := block["description"].(string); ok && desc != "" {
+				parts = append(parts, desc)
+			}
+			text := "Resource link"
+			if len(parts) > 0 {
+				text = strings.Join(parts, "\n")
+			}
+			content = append(content, map[string]any{
+				"type": "text",
+				"text": text,
+			})
+		case "resource":
+			resource, _ := block["resource"].(map[string]any)
+			if resource == nil {
+				slog.Warn("Binary embedded resource cannot be converted to text, skipping")
+				continue
+			}
+			if text, hasText := resource["text"]; hasText {
+				textStr, _ := text.(string)
+				content = append(content, map[string]any{
+					"type": "text",
+					"text": textStr,
+				})
+			} else {
+				slog.Warn("Binary embedded resource cannot be converted to text, skipping")
+			}
 		default:
-			// Preserve unknown block types for forward compatibility.
-			content = append(content, block)
+			slog.Warn("Unsupported content type in tool result, skipping", "type", blockType)
 		}
 	}
 

@@ -134,6 +134,95 @@ func TestHandleCanUseTool_BlockedPath(t *testing.T) {
 	assert.Equal(t, "/etc/sensitive", receivedCtx.BlockedPath)
 }
 
+func TestHandleCanUseTool_ToolUseIDAndAgentID(t *testing.T) {
+	// Verify that tool_use_id and agent_id are parsed and passed to the callback.
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_2",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Bash",
+			"input": {"command": "ls"},
+			"permission_suggestions": [],
+			"tool_use_id": "toolu_01ABC123",
+			"agent_id": "agent-456"
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Equal(t, "toolu_01ABC123", receivedCtx.ToolUseID)
+	assert.Equal(t, "agent-456", receivedCtx.AgentID)
+}
+
+func TestHandleCanUseTool_MissingAgentID(t *testing.T) {
+	// Verify that agent_id defaults to empty string when not present in the request
+	// (e.g. when the tool call comes from the top-level agent, not a sub-agent).
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_3",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Bash",
+			"input": {"command": "pwd"},
+			"permission_suggestions": [],
+			"tool_use_id": "toolu_01XYZ789"
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Equal(t, "toolu_01XYZ789", receivedCtx.ToolUseID)
+	assert.Empty(t, receivedCtx.AgentID)
+}
+
+func TestHandleCanUseTool_MissingToolUseID(t *testing.T) {
+	// Verify that tool_use_id defaults to empty string when not present.
+	// This guards against older CLI versions that might not send tool_use_id.
+	var receivedCtx ToolPermissionContext
+	opts := &Options{
+		canUseTool: func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error) {
+			receivedCtx = permCtx
+			return PermissionAllow{}, nil
+		},
+	}
+
+	router := NewControlRouter(nil, opts)
+
+	raw := []byte(`{
+		"request_id": "req_4",
+		"request": {
+			"subtype": "can_use_tool",
+			"tool_name": "Write",
+			"input": {"path": "/tmp/test"},
+			"permission_suggestions": []
+		}
+	}`)
+
+	_, err := router.handleCanUseTool(context.Background(), raw)
+	require.NoError(t, err)
+	assert.Empty(t, receivedCtx.ToolUseID)
+	assert.Empty(t, receivedCtx.AgentID)
+}
+
 func TestControlRouter_HandleMessage_NonControlPassthrough(t *testing.T) {
 	// Non-control messages (user, assistant, system, result, stream events)
 	// should pass through HandleMessage and return handled=false.
@@ -163,7 +252,7 @@ func TestControlRouter_HandleMessage_NonControlPassthrough(t *testing.T) {
 
 func TestControlRouter_HandleMessage_UnknownControlSubtype(t *testing.T) {
 	// When the CLI sends a control request with an unknown subtype,
-	// HandleMessage should return an error response (not panic or ignore).
+	// HandleMessage should spawn a handler that writes an error response.
 	transport := &writeCapturingTransport{}
 	opts := &Options{}
 	router := NewControlRouter(transport, opts)
@@ -183,27 +272,177 @@ func TestControlRouter_HandleMessage_UnknownControlSubtype(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, handled, "control request should always be handled")
 
-	// The router should send an error response back to the transport
+	// Wait for the handler goroutine to complete
+	router.WaitInflight()
+
+	// The router should have sent an error response back to the transport
+	transport.mu.Lock()
 	written := transport.lastWritten
+	transport.mu.Unlock()
 	assert.Contains(t, written, "control_response")
 	assert.Contains(t, written, "error")
 	assert.Contains(t, written, "unsupported control request subtype")
 }
 
 func TestControlRouter_HandleMessage_ControlCancelRequest(t *testing.T) {
-	// ControlCancelRequest should be handled (swallowed) without error.
+	// ControlCancelRequest for an unknown request_id should be handled as a no-op
+	// (no panic, no error).
 	opts := &Options{}
 	router := NewControlRouter(nil, opts)
 	ctx := context.Background()
 
 	msg := &ControlCancelRequest{
 		Type:      "control_cancel_request",
-		RequestID: "req_42",
+		RequestID: "nonexistent",
 	}
 
 	handled, err := router.HandleMessage(ctx, msg, nil)
 	require.NoError(t, err)
 	assert.True(t, handled, "cancel requests should be handled")
+}
+
+func TestControlRouter_CancelRequest_CancelsInflightHook(t *testing.T) {
+	// When a control_cancel_request arrives for an in-flight hook_callback,
+	// the handler's context should be cancelled, the hook should stop, and
+	// no response should be written for the cancelled request.
+	transport := &allWritesCapturingTransport{}
+	hookStarted := make(chan struct{})
+	hookCancelled := make(chan struct{})
+
+	opts := &Options{}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	// Register a slow hook callback that signals when it starts and when cancelled
+	router.mu.Lock()
+	router.hookCallbacks["hook_0"] = func(ctx context.Context, input HookInput, toolUseID *string) (HookOutput, error) {
+		close(hookStarted)
+		// Block until context is cancelled
+		<-ctx.Done()
+		close(hookCancelled)
+		return HookOutput{}, ctx.Err()
+	}
+	router.mu.Unlock()
+
+	// Send a control_request with hook_callback subtype
+	controlReqMsg := &ControlRequest{
+		Type:      "control_request",
+		RequestID: "hook_1",
+	}
+	controlReqRaw := []byte(`{
+		"type": "control_request",
+		"request_id": "hook_1",
+		"request": {
+			"subtype": "hook_callback",
+			"callback_id": "hook_0",
+			"input": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}}
+		}
+	}`)
+
+	handled, err := router.HandleMessage(ctx, controlReqMsg, controlReqRaw)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// Wait for the hook to start executing
+	select {
+	case <-hookStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook did not start in time")
+	}
+
+	// Now send a cancel request for that hook
+	cancelMsg := &ControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: "hook_1",
+	}
+	handled, err = router.HandleMessage(ctx, cancelMsg, nil)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// The hook should be cancelled
+	select {
+	case <-hookCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook was not cancelled in time")
+	}
+
+	// Wait for the handler goroutine to finish
+	router.WaitInflight()
+
+	// No response should have been written for the cancelled request
+	written := transport.allWritten()
+	for _, w := range written {
+		assert.NotContains(t, w, "hook_1",
+			"cancelled request should not produce a response, but got: %s", w)
+	}
+
+	// The request should be removed from inflight tracking
+	router.mu.Lock()
+	_, stillTracked := router.inflightRequests["hook_1"]
+	router.mu.Unlock()
+	assert.False(t, stillTracked, "cancelled request should be removed from inflight tracking")
+}
+
+func TestControlRouter_CompletedRequestRemovedFromInflight(t *testing.T) {
+	// Once a control_request handler completes normally, it should be removed
+	// from inflightRequests so a late cancel is a harmless no-op.
+	transport := &allWritesCapturingTransport{}
+	hookDone := make(chan struct{})
+
+	opts := &Options{}
+	router := NewControlRouter(transport, opts)
+	ctx := context.Background()
+
+	// Register a fast hook callback
+	router.mu.Lock()
+	router.hookCallbacks["hook_0"] = func(ctx context.Context, input HookInput, toolUseID *string) (HookOutput, error) {
+		defer close(hookDone)
+		return HookOutput{}, nil
+	}
+	router.mu.Unlock()
+
+	controlReqMsg := &ControlRequest{
+		Type:      "control_request",
+		RequestID: "fast_1",
+	}
+	controlReqRaw := []byte(`{
+		"type": "control_request",
+		"request_id": "fast_1",
+		"request": {
+			"subtype": "hook_callback",
+			"callback_id": "hook_0",
+			"input": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}}
+		}
+	}`)
+
+	handled, err := router.HandleMessage(ctx, controlReqMsg, controlReqRaw)
+	require.NoError(t, err)
+	assert.True(t, handled)
+
+	// Wait for the hook to complete
+	select {
+	case <-hookDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook did not complete in time")
+	}
+
+	// Wait for the handler goroutine to finish cleanup
+	router.WaitInflight()
+
+	// The request should have been removed from inflight tracking
+	router.mu.Lock()
+	_, stillTracked := router.inflightRequests["fast_1"]
+	router.mu.Unlock()
+	assert.False(t, stillTracked, "completed request should be removed from inflight tracking")
+
+	// A late cancel should be a no-op
+	cancelMsg := &ControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: "fast_1",
+	}
+	handled, err = router.HandleMessage(ctx, cancelMsg, nil)
+	require.NoError(t, err)
+	assert.True(t, handled)
 }
 
 func TestControlRouter_ConcurrentRequests(t *testing.T) {
@@ -252,12 +491,39 @@ func TestControlRouter_ConcurrentRequests(t *testing.T) {
 	}
 
 	wg.Wait()
+	router.WaitInflight()
 }
 
 // writeCapturingTransport captures the last written data for assertions.
 type writeCapturingTransport struct {
 	mu          sync.Mutex
 	lastWritten string
+}
+
+// allWritesCapturingTransport captures all written data for assertions.
+type allWritesCapturingTransport struct {
+	mu      sync.Mutex
+	written []string
+}
+
+func (w *allWritesCapturingTransport) Connect(ctx context.Context) error                     { return nil }
+func (w *allWritesCapturingTransport) ReadMessages(ctx context.Context) <-chan MessageOrError { return nil }
+func (w *allWritesCapturingTransport) Write(ctx context.Context, data string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.written = append(w.written, data)
+	return nil
+}
+func (w *allWritesCapturingTransport) EndInput(ctx context.Context) error { return nil }
+func (w *allWritesCapturingTransport) Close(ctx context.Context) error    { return nil }
+func (w *allWritesCapturingTransport) IsReady() bool                      { return true }
+
+func (w *allWritesCapturingTransport) allWritten() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	result := make([]string, len(w.written))
+	copy(result, w.written)
+	return result
 }
 
 func (w *writeCapturingTransport) Connect(ctx context.Context) error                      { return nil }
@@ -271,6 +537,71 @@ func (w *writeCapturingTransport) Write(ctx context.Context, data string) error 
 func (w *writeCapturingTransport) EndInput(ctx context.Context) error                     { return nil }
 func (w *writeCapturingTransport) Close(ctx context.Context) error                        { return nil }
 func (w *writeCapturingTransport) IsReady() bool                                          { return true }
+
+func TestInitialize_HonorsEnvTimeout(t *testing.T) {
+	// Verify that Initialize() reads CLAUDE_CODE_STREAM_CLOSE_TIMEOUT and uses
+	// it as the initialize timeout. This is the Go equivalent of the Python SDK
+	// fix in commit 76cb292: both Query()/QueryWithInput() and Client.Connect()
+	// call ControlRouter.Initialize(), which reads the env var. The Go SDK never
+	// had the Python bug (separate code paths with one forgetting the env var),
+	// but this test guards against regressions.
+
+	t.Run("custom timeout from env var", func(t *testing.T) {
+		// Set a short timeout (100ms) via the env var. Initialize() should
+		// time out in roughly 100ms since the transport never responds.
+		t.Setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "100")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		start := time.Now()
+		_, err := router.Initialize(context.Background())
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrTimeout)
+
+		// Should have timed out in ~100ms, not the default 60s.
+		// Use a generous upper bound to avoid flakiness, but ensure it
+		// did not wait anywhere close to the default 60s.
+		assert.Less(t, elapsed, 5*time.Second,
+			"should time out near 100ms, not the default 60s")
+	})
+
+	t.Run("default timeout when env var unset", func(t *testing.T) {
+		// When the env var is unset, Initialize() should use DefaultInitializeTimeout (60s).
+		// We cannot wait 60s in a unit test, so instead we use context cancellation
+		// to verify that the initialize attempt starts (proving it did not time out
+		// at 0 or some other wrong value).
+		os.Unsetenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := router.Initialize(ctx)
+		require.Error(t, err)
+		// Should be a context deadline exceeded, not ErrTimeout (because the
+		// default 60s timeout is much longer than our 50ms context deadline).
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("invalid env var returns error", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", "not-a-number")
+
+		transport := &writeCapturingTransport{}
+		opts := &Options{}
+		router := NewControlRouter(transport, opts)
+
+		_, err := router.Initialize(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse duration")
+	})
+}
 
 func TestBuildHooksConfig(t *testing.T) {
 	// Suppress unused variable warning for context import

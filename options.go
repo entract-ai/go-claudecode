@@ -15,6 +15,7 @@ const (
 	PermissionAcceptEdits       PermissionMode = "acceptEdits"
 	PermissionPlan              PermissionMode = "plan"
 	PermissionBypassPermissions PermissionMode = "bypassPermissions"
+	PermissionDontAsk           PermissionMode = "dontAsk"
 )
 
 // Beta represents a beta feature flag.
@@ -31,10 +32,21 @@ const (
 
 // AgentDefinition defines a custom agent.
 type AgentDefinition struct {
-	Description string   `json:"description"`
-	Prompt      string   `json:"prompt"`
-	Tools       []string `json:"tools,omitzero"`
-	Model       string   `json:"model,omitzero"` // "sonnet", "opus", "haiku", "inherit"
+	Description     string   `json:"description"`
+	Prompt          string   `json:"prompt"`
+	Tools           []string `json:"tools,omitzero"`
+	DisallowedTools []string `json:"disallowedTools,omitzero"`
+	// Model alias ("sonnet", "opus", "haiku", "inherit") or a full model ID.
+	Model  string   `json:"model,omitzero"`
+	Skills []string `json:"skills,omitzero"`
+	Memory *string  `json:"memory,omitzero"` // "user", "project", "local"
+	// Each entry is a server name (string) or an inline map (name -> config).
+	McpServers          []any   `json:"mcpServers,omitzero"`
+	InitialPrompt       *string `json:"initialPrompt,omitzero"`
+	MaxTurns            *int    `json:"maxTurns,omitzero"`
+	Background          *bool   `json:"background,omitzero"`
+	Effort              any     `json:"effort,omitzero"`
+	AgentPermissionMode *string `json:"permissionMode,omitzero"`
 }
 
 // SandboxSettings configures the sandbox for bash commands.
@@ -107,6 +119,131 @@ type MCPSDKConfig struct {
 
 func (*MCPSDKConfig) mcpServerConfigMarker() {}
 
+// McpServerConnectionStatus represents the connection status of an MCP server.
+type McpServerConnectionStatus string
+
+const (
+	McpStatusConnected McpServerConnectionStatus = "connected"
+	McpStatusFailed    McpServerConnectionStatus = "failed"
+	McpStatusNeedsAuth McpServerConnectionStatus = "needs-auth"
+	McpStatusPending   McpServerConnectionStatus = "pending"
+	McpStatusDisabled  McpServerConnectionStatus = "disabled"
+)
+
+// McpServerInfo contains server info from the MCP initialize handshake.
+// Available when the server status is "connected".
+type McpServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// McpToolAnnotations describes tool behavior annotations returned in MCP
+// server status. Wire format uses camelCase field names.
+type McpToolAnnotations struct {
+	ReadOnly    *bool `json:"readOnly,omitempty"`
+	Destructive *bool `json:"destructive,omitempty"`
+	OpenWorld   *bool `json:"openWorld,omitempty"`
+}
+
+// McpToolInfo describes a tool provided by an MCP server.
+type McpToolInfo struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Annotations *McpToolAnnotations `json:"annotations,omitempty"`
+}
+
+// McpServerStatus contains the status of an MCP server connection.
+// Returned by Client.GetMCPStatus in the McpServers list.
+type McpServerStatus struct {
+	Name       string                    `json:"name"`
+	Status     McpServerConnectionStatus `json:"status"`
+	ServerInfo *McpServerInfo            `json:"serverInfo,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+	Config     map[string]any            `json:"config,omitempty"`
+	Scope      string                    `json:"scope,omitempty"`
+	Tools      []McpToolInfo             `json:"tools,omitempty"`
+}
+
+// McpStatusResponse is the response from Client.GetMCPStatus.
+// It wraps the list of server statuses under the McpServers key, matching
+// the wire-format response shape.
+type McpStatusResponse struct {
+	McpServers []McpServerStatus `json:"mcpServers"`
+}
+
+// ContextUsageCategory represents a single context usage category
+// (system prompt, tools, messages, etc.).
+type ContextUsageCategory struct {
+	Name       string `json:"name"`
+	Tokens     int    `json:"tokens"`
+	Color      string `json:"color"`
+	IsDeferred *bool  `json:"isDeferred,omitempty"`
+}
+
+// ContextUsageResponse is the response from Client.GetContextUsage.
+// It provides a breakdown of current context window usage by category,
+// matching the data shown by the /context command in the CLI.
+type ContextUsageResponse struct {
+	// Categories is the token usage broken down by category
+	// (system prompt, tools, messages, etc.).
+	Categories []ContextUsageCategory `json:"categories"`
+
+	// TotalTokens is the total tokens currently in the context window.
+	TotalTokens int `json:"totalTokens"`
+
+	// MaxTokens is the effective maximum tokens (may be reduced by autocompact buffer).
+	MaxTokens int `json:"maxTokens"`
+
+	// RawMaxTokens is the raw model context window size.
+	RawMaxTokens int `json:"rawMaxTokens"`
+
+	// Percentage is the percent of context window used (0-100).
+	Percentage float64 `json:"percentage"`
+
+	// Model is the model name the context usage is calculated for.
+	Model string `json:"model"`
+
+	// IsAutoCompactEnabled indicates whether autocompact is enabled for this session.
+	IsAutoCompactEnabled bool `json:"isAutoCompactEnabled"`
+
+	// MemoryFiles lists CLAUDE.md and memory files loaded, with path, type, and token counts.
+	MemoryFiles []map[string]any `json:"memoryFiles"`
+
+	// McpTools lists MCP tools with name, serverName, tokens, and isLoaded status.
+	McpTools []map[string]any `json:"mcpTools"`
+
+	// Agents lists agent definitions with agentType, source, and token counts.
+	Agents []map[string]any `json:"agents"`
+
+	// GridRows is the visual grid representation used by the CLI context display.
+	GridRows [][]map[string]any `json:"gridRows"`
+
+	// AutoCompactThreshold is the token threshold at which autocompact triggers.
+	AutoCompactThreshold *int `json:"autoCompactThreshold,omitempty"`
+
+	// DeferredBuiltinTools lists built-in tools deferred from the initial tool list.
+	DeferredBuiltinTools []map[string]any `json:"deferredBuiltinTools,omitempty"`
+
+	// SystemTools lists system (built-in) tools with name and token counts.
+	SystemTools []map[string]any `json:"systemTools,omitempty"`
+
+	// SystemPromptSections lists system prompt sections with name and token counts.
+	SystemPromptSections []map[string]any `json:"systemPromptSections,omitempty"`
+
+	// SlashCommands is the slash command usage summary.
+	SlashCommands map[string]any `json:"slashCommands,omitempty"`
+
+	// Skills is the skill usage summary with frontmatter breakdown.
+	Skills map[string]any `json:"skills,omitempty"`
+
+	// MessageBreakdown is a detailed breakdown of message tokens by type
+	// (tool calls, results, etc.).
+	MessageBreakdown map[string]any `json:"messageBreakdown,omitempty"`
+
+	// APIUsage is the cumulative API usage for the session.
+	APIUsage map[string]any `json:"apiUsage,omitempty"`
+}
+
 // CanUseToolFunc is the callback type for tool permission decisions.
 type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]any, permCtx ToolPermissionContext) (PermissionResult, error)
 
@@ -114,6 +251,15 @@ type CanUseToolFunc func(ctx context.Context, toolName string, input map[string]
 type ToolPermissionContext struct {
 	Suggestions []PermissionUpdate
 	BlockedPath string // path that triggered the permission check
+
+	// ToolUseID is the unique identifier for this specific tool call within the
+	// assistant message. Multiple tool calls in the same assistant message will
+	// have different ToolUseIDs.
+	ToolUseID string
+
+	// AgentID identifies the sub-agent that requested this tool call, if any.
+	// Empty when the tool call comes from the top-level agent.
+	AgentID string
 }
 
 // PermissionResult is a marker interface for permission decisions.
@@ -269,6 +415,7 @@ type Options struct {
 	// System prompt
 	systemPrompt       *string // nil = use --system-prompt ""
 	systemPromptAppend string  // --append-system-prompt
+	systemPromptFile   string  // --system-prompt-file <path>
 
 	// MCP servers
 	mcpServers     map[string]MCPServerConfig
@@ -284,12 +431,14 @@ type Options struct {
 	// Session
 	continueConversation bool
 	resume               string
+	sessionID            string
 	forkSession          bool
 
 	// Limits
 	maxTurns          int
 	maxBudgetUSD      float64
 	maxThinkingTokens *int
+	taskBudget        *int // API-side task budget in tokens
 
 	// Model
 	model         string
@@ -333,7 +482,6 @@ type Options struct {
 	enableFileCheckpointing bool
 	stderrCallback          func(string)
 	streamingMode           bool
-
 }
 
 // Option is a functional option for configuring a Claude Code session.
@@ -378,6 +526,15 @@ func WithSystemPrompt(prompt string) Option {
 func WithSystemPromptPreset(append string) Option {
 	return func(o *Options) {
 		o.systemPromptAppend = append
+	}
+}
+
+// WithSystemPromptFile sets a file path containing the system prompt.
+// When set, the CLI receives --system-prompt-file <path> instead of
+// --system-prompt or --append-system-prompt.
+func WithSystemPromptFile(path string) Option {
+	return func(o *Options) {
+		o.systemPromptFile = path
 	}
 }
 
@@ -458,6 +615,14 @@ func WithResume(sessionID string) Option {
 	}
 }
 
+// WithSessionID sets a custom session ID (UUID) for the conversation.
+// When set, the CLI receives --session-id <id> instead of auto-generating one.
+func WithSessionID(id string) Option {
+	return func(o *Options) {
+		o.sessionID = id
+	}
+}
+
 // WithForkSession forks the resumed session instead of continuing it.
 func WithForkSession() Option {
 	return func(o *Options) {
@@ -483,6 +648,15 @@ func WithMaxBudgetUSD(budget float64) Option {
 func WithMaxThinkingTokens(tokens int) Option {
 	return func(o *Options) {
 		o.maxThinkingTokens = &tokens
+	}
+}
+
+// WithTaskBudget sets an API-side task budget in tokens. When set, the model
+// is made aware of its remaining token budget so it can pace tool use and wrap
+// up before the limit.
+func WithTaskBudget(total int) Option {
+	return func(o *Options) {
+		o.taskBudget = &total
 	}
 }
 

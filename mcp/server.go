@@ -292,11 +292,23 @@ func parseToolResult(output string) (CallToolResult, error) {
 }
 
 func toolResultHasError(structured map[string]any) bool {
+	// Check isError (camelCase, MCP protocol standard)
+	if raw, ok := structured["isError"]; ok {
+		if v, ok := raw.(bool); ok {
+			return v
+		}
+	}
+	// Check is_error (snake_case, Python SDK tool result convention)
+	if raw, ok := structured["is_error"]; ok {
+		if v, ok := raw.(bool); ok {
+			return v
+		}
+	}
+	// Check error field (non-empty string or truthy value)
 	raw, ok := structured["error"]
 	if !ok || raw == nil {
 		return false
 	}
-
 	if errStr, ok := raw.(string); ok {
 		return errStr != ""
 	}

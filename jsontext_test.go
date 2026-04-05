@@ -102,4 +102,150 @@ func TestJsontextStreamingBehavior(t *testing.T) {
 
 		assert.Len(t, values, 3)
 	})
+
+	t.Run("raw decoder fails on non-JSON debug lines", func(t *testing.T) {
+		// jsontext.Decoder fails when non-JSON text like [SandboxDebug]
+		// lines appear in the stream. This is the underlying issue that
+		// the jsonLineFilterReader fixes.
+		input := "[SandboxDebug] Seccomp filtering not available\n" +
+			`{"type":"system","subtype":"init"}` + "\n"
+
+		dec := jsontext.NewDecoder(strings.NewReader(input))
+
+		_, err := dec.ReadValue()
+		assert.Error(t, err, "raw jsontext.Decoder should error on non-JSON lines")
+	})
+
+	t.Run("filtered reader skips non-JSON debug lines", func(t *testing.T) {
+		// jsonLineFilterReader strips non-JSON lines so the decoder
+		// only sees valid JSON objects. This is the fix for the
+		// [SandboxDebug] corruption bug (upstream Python commit c290bbf).
+		input := "[SandboxDebug] Seccomp filtering not available\n" +
+			`{"type":"system","subtype":"init"}` + "\n" +
+			"[SandboxDebug] another debug line\n" +
+			`{"type":"result","subtype":"success"}` + "\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		var values []string
+		for {
+			val, err := dec.ReadValue()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			values = append(values, string(val))
+		}
+
+		require.Len(t, values, 2)
+		assert.Contains(t, values[0], `"type":"system"`)
+		assert.Contains(t, values[1], `"type":"result"`)
+	})
+
+	t.Run("filtered reader handles interleaved non-JSON lines", func(t *testing.T) {
+		// Debug/warning lines interleaved between valid JSON messages
+		// must be silently skipped.
+		input := "[SandboxDebug] line 1\n" +
+			"[SandboxDebug] line 2\n" +
+			`{"type":"system","subtype":"init"}` + "\n" +
+			"WARNING: something\n" +
+			`{"type":"result","subtype":"success"}` + "\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		var values []string
+		for {
+			val, err := dec.ReadValue()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			values = append(values, string(val))
+		}
+
+		require.Len(t, values, 2)
+		assert.Contains(t, values[0], `"type":"system"`)
+		assert.Contains(t, values[1], `"type":"result"`)
+	})
+
+	t.Run("filtered reader passes through all-JSON stream unchanged", func(t *testing.T) {
+		// When there are no non-JSON lines, the filter is transparent.
+		input := `{"a":1}` + "\n" + `{"b":2}` + "\n" + `{"c":3}` + "\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		var values []string
+		for {
+			val, err := dec.ReadValue()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			values = append(values, string(val))
+		}
+
+		assert.Len(t, values, 3)
+	})
+
+	t.Run("filtered reader handles empty lines", func(t *testing.T) {
+		input := "\n\n" + `{"a":1}` + "\n" + "\n" + `{"b":2}` + "\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		var values []string
+		for {
+			val, err := dec.ReadValue()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			values = append(values, string(val))
+		}
+
+		assert.Len(t, values, 2)
+	})
+
+	t.Run("filtered reader handles only non-JSON lines", func(t *testing.T) {
+		input := "[SandboxDebug] line 1\n[SandboxDebug] line 2\nWARNING: stuff\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		_, err := dec.ReadValue()
+		assert.ErrorIs(t, err, io.EOF)
+	})
+
+	t.Run("filtered reader handles JSON lines exceeding 64KB", func(t *testing.T) {
+		// The default bufio.Scanner buffer is 64KB. Assistant responses
+		// routinely exceed this, so the scanner must be configured with
+		// a larger buffer. Without the Buffer() call in
+		// newJSONLineFilterReader, this test fails with bufio.ErrTooLong.
+		largeContent := strings.Repeat("x", 128*1024) // 128KB > default 64KB limit
+		input := `{"type":"system","subtype":"init"}` + "\n" +
+			`{"type":"assistant","content":"` + largeContent + `"}` + "\n" +
+			`{"type":"result","subtype":"success"}` + "\n"
+
+		filtered := newJSONLineFilterReader(strings.NewReader(input))
+		dec := jsontext.NewDecoder(filtered)
+
+		var values []string
+		for {
+			val, err := dec.ReadValue()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			values = append(values, string(val))
+		}
+
+		require.Len(t, values, 3)
+		assert.Contains(t, values[0], `"type":"system"`)
+		assert.Contains(t, values[1], `"type":"assistant"`)
+		assert.True(t, len(values[1]) > 128*1024, "large JSON value should be preserved")
+		assert.Contains(t, values[2], `"type":"result"`)
+	})
 }

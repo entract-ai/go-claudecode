@@ -57,6 +57,14 @@ type PreToolUseInput struct {
 	ToolName  string         `json:"tool_name"`
 	ToolInput map[string]any `json:"tool_input"`
 	ToolUseID string         `json:"tool_use_id"`
+	// AgentID is set when the hook fires from inside a Task sub-agent.
+	// It matches the agent_id from the corresponding SubagentStart/SubagentStop.
+	// Nil on the main thread.
+	AgentID *string `json:"agent_id,omitzero"`
+	// AgentType is the agent type name (e.g. "general-purpose").
+	// Present inside a sub-agent (alongside AgentID), or on the main thread
+	// of a session started with --agent.
+	AgentType *string `json:"agent_type,omitzero"`
 }
 
 func (PreToolUseInput) hookInputMarker() {}
@@ -68,6 +76,8 @@ type PostToolUseInput struct {
 	ToolInput    map[string]any `json:"tool_input"`
 	ToolResponse any            `json:"tool_response"`
 	ToolUseID    string         `json:"tool_use_id"`
+	AgentID      *string        `json:"agent_id,omitzero"`
+	AgentType    *string        `json:"agent_type,omitzero"`
 }
 
 func (PostToolUseInput) hookInputMarker() {}
@@ -96,6 +106,8 @@ type PostToolUseFailureInput struct {
 	ToolUseID   string         `json:"tool_use_id"`
 	Error       string         `json:"error"`
 	IsInterrupt bool           `json:"is_interrupt"`
+	AgentID     *string        `json:"agent_id,omitzero"`
+	AgentType   *string        `json:"agent_type,omitzero"`
 }
 
 func (PostToolUseFailureInput) hookInputMarker() {}
@@ -136,6 +148,8 @@ type PermissionRequestInput struct {
 	ToolName              string         `json:"tool_name"`
 	ToolInput             map[string]any `json:"tool_input"`
 	PermissionSuggestions []any          `json:"permission_suggestions,omitzero"`
+	AgentID               *string        `json:"agent_id,omitzero"`
+	AgentType             *string        `json:"agent_type,omitzero"`
 }
 
 func (PermissionRequestInput) hookInputMarker() {}

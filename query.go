@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 )
 
 // Query performs a one-shot query with a string prompt.
 // Internally delegates to QueryWithInput using the streaming control protocol,
 // which means hooks, SDK MCP servers, and canUseTool callbacks are all supported.
+//
+// Because this delegates to QueryWithInput, both string prompts and streaming
+// prompts share the same stdin lifecycle: when SDK MCP servers or hooks are
+// configured, stdin stays open until the first result arrives. This avoids
+// a bug class where closing stdin too early prevents MCP server initialization.
+// See upstream Python SDK commit 6119fd4 for the equivalent fix.
 func Query(ctx context.Context, prompt string, opts ...Option) <-chan MessageOrError {
 	ch := make(chan MessageOrError, 100)
 
@@ -149,21 +154,26 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 				hasCanUseTool := options.canUseTool != nil
 
 				if hasSDKMCP || hasHooks || hasCanUseTool {
-					timeout, err := getEnvDurationWithDefault("CLAUDE_CODE_STREAM_CLOSE_TIMEOUT", DefaultStreamCloseTimeout)
-					if err != nil {
-						ch <- MessageOrError{Err: fmt.Errorf("get stream close timeout: %w", err)}
-						return
-					}
+					// Wait unconditionally for the first result. The control
+					// protocol requires stdin to remain open for the entire
+					// conversation when hooks or SDK MCP servers are active,
+					// so no timeout is applied. The event is guaranteed to
+					// fire: either when the result message arrives, or when
+					// the reader goroutine exits (e.g. process exit/crash).
 					select {
 					case <-firstResultReceived:
 						// Normal path - result received
 					case <-readerDone:
 						// Reader ended early (e.g., CLI failure) - don't wait further
-					case <-time.After(timeout):
-						// Timeout reached, continue anyway
 					case <-ctx.Done():
 						// Context cancelled
 					}
+
+					// Wait for in-flight control request handlers to
+					// complete before closing stdin. This ensures MCP
+					// init responses and hook responses are written
+					// while the transport is still accepting writes.
+					router.WaitInflight()
 				}
 
 				transport.EndInput(ctx)
@@ -194,6 +204,10 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 		for msg := range routedCh {
 			ch <- msg
 		}
+
+		// Wait for in-flight control request handlers (e.g. hook callbacks)
+		// to finish before closing the transport.
+		router.WaitInflight()
 
 		// Wait for input streaming to complete
 		wg.Wait()
