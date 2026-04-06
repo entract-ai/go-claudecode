@@ -277,6 +277,18 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("  (remote ip \"localhost:%s\"))\n", httpPort))
 		policyBuilder.WriteString("(allow network-outbound\n")
 		policyBuilder.WriteString(fmt.Sprintf("  (remote ip \"localhost:%s\"))\n", socksPort))
+
+		// Allow full localhost networking when AllowLocalhostOnly is set alongside proxy.
+		// Dev servers and test databases need bind + inbound + outbound on localhost;
+		// without outbound, a process that binds a port can't connect back to itself.
+		if policy.AllowLocalhostOnly {
+			policyBuilder.WriteString("(allow network-outbound\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+			policyBuilder.WriteString("(allow network-bind\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+			policyBuilder.WriteString("(allow network-inbound\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+		}
 	} else if policy.AllowNetwork {
 		// Full network access (includes localhost and internet)
 		policyBuilder.WriteString("(allow network-outbound)\n")
@@ -296,7 +308,13 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString("(allow network-inbound\n")
 		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 	}
-	// If all are false/nil, no network rules are added (network is blocked)
+
+	// Allow direct DNS (UDP port 53) for runtimes that bypass the system
+	// resolver (Java, Bazel). Redundant when AllowNetwork is true.
+	if policy.AllowDNS && !policy.AllowNetwork {
+		policyBuilder.WriteString("(allow network-outbound\n")
+		policyBuilder.WriteString("  (remote udp \"*:53\"))\n")
+	}
 
 	fullPolicy = policyBuilder.String()
 
