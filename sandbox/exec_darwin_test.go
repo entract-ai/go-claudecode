@@ -292,17 +292,20 @@ func TestSeatbeltArgs_ProxyWithAllowLocalhostOnly(t *testing.T) {
 
 	policyStr := args[2]
 
-	// Proxy outbound rules should still be present
-	assert.Contains(t, policyStr, "allow network-outbound",
-		"Proxy branch should allow outbound to proxy ports")
+	// Proxy outbound rules should still be present for the proxy ports
+	assert.Contains(t, policyStr, `(remote ip "localhost:18080")`,
+		"Proxy branch should allow outbound to HTTP proxy port")
+	assert.Contains(t, policyStr, `(remote ip "localhost:18081")`,
+		"Proxy branch should allow outbound to SOCKS proxy port")
 
-	// AllowLocalhostOnly should add bind and inbound rules even with proxy
+	// AllowLocalhostOnly should add localhost IPC rules (outbound, bind, inbound)
+	// so processes can communicate over localhost (e.g. Bazel client → gRPC server)
+	assert.Contains(t, policyStr, "(allow network-outbound\n  (local ip \"*:*\"))",
+		"Proxy + AllowLocalhostOnly should allow localhost outbound for IPC")
 	assert.Contains(t, policyStr, "allow network-bind",
 		"Proxy + AllowLocalhostOnly should allow network bind for localhost")
 	assert.Contains(t, policyStr, "allow network-inbound",
 		"Proxy + AllowLocalhostOnly should allow inbound for localhost")
-	assert.Contains(t, policyStr, `(local ip "*:*")`,
-		"Bind/inbound rules should use (local ip \"*:*\") for IPv6 compatibility")
 }
 
 func TestSeatbeltArgs_ProxyWithoutAllowLocalhostOnly(t *testing.T) {

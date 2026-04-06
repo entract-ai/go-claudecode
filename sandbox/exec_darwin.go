@@ -278,9 +278,14 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString("(allow network-outbound\n")
 		policyBuilder.WriteString(fmt.Sprintf("  (remote ip \"localhost:%s\"))\n", socksPort))
 
-		// Allow localhost socket binding when AllowLocalhostOnly is set alongside proxy.
-		// Bazel's gRPC server and Go's testdb (embedded postgres) need bind() on localhost.
+		// Allow localhost IPC when AllowLocalhostOnly is set alongside proxy.
+		// Bazel's gRPC server needs bind()+listen()+accept() on localhost, and
+		// its client needs outbound to reach the server port. Go's testdb
+		// (embedded postgres) similarly needs localhost socket communication.
+		// Internet-bound outbound still goes through the proxy above.
 		if policy.AllowLocalhostOnly {
+			policyBuilder.WriteString("(allow network-outbound\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 			policyBuilder.WriteString("(allow network-bind\n")
 			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 			policyBuilder.WriteString("(allow network-inbound\n")
