@@ -156,7 +156,10 @@ type Policy struct {
 	// Command() directly (not Exec()), pass a cancellable context and cancel it
 	// after the command finishes to ensure bridge resources are released.
 	//
-	// Note: If NetworkProxy is set, AllowNetwork and AllowLocalhostOnly are ignored.
+	// Note: If NetworkProxy is set, AllowNetwork is ignored. AllowLocalhostOnly is
+	// still respected — when true, network-bind and network-inbound rules are added
+	// so the sandboxed process can bind localhost sockets while outbound traffic
+	// is still routed through the proxy.
 	NetworkProxy *NetworkProxy
 
 	// Env specifies additional environment variables to set in the sandboxed process.
