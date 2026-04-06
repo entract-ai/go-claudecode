@@ -270,6 +270,74 @@ func TestSeatbeltArgs_AllowLocalhostOnly(t *testing.T) {
 		"AllowLocalhostOnly should use (local ip) not (remote ip) for outbound")
 }
 
+func TestSeatbeltArgs_ProxyWithAllowLocalhostOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Stub proxy — seatbeltArgs only reads HTTPAddr()/SOCKSAddr(), no real listeners needed.
+	proxy := &NetworkProxy{
+		httpAddr:  "http://127.0.0.1:18080",
+		socksAddr: "127.0.0.1:18081",
+		closed:    make(chan struct{}),
+	}
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.NetworkProxy = proxy
+	policy.AllowLocalhostOnly = true
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Proxy outbound rules should still be present
+	assert.Contains(t, policyStr, "allow network-outbound",
+		"Proxy branch should allow outbound to proxy ports")
+
+	// AllowLocalhostOnly should add bind and inbound rules even with proxy
+	assert.Contains(t, policyStr, "allow network-bind",
+		"Proxy + AllowLocalhostOnly should allow network bind for localhost")
+	assert.Contains(t, policyStr, "allow network-inbound",
+		"Proxy + AllowLocalhostOnly should allow inbound for localhost")
+	assert.Contains(t, policyStr, `(local ip "*:*")`,
+		"Bind/inbound rules should use (local ip \"*:*\") for IPv6 compatibility")
+}
+
+func TestSeatbeltArgs_ProxyWithoutAllowLocalhostOnly(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Stub proxy — seatbeltArgs only reads HTTPAddr()/SOCKSAddr(), no real listeners needed.
+	proxy := &NetworkProxy{
+		httpAddr:  "http://127.0.0.1:18080",
+		socksAddr: "127.0.0.1:18081",
+		closed:    make(chan struct{}),
+	}
+
+	policy := DefaultPolicy()
+	policy.WorkDir = tmpDir
+	policy.NetworkProxy = proxy
+	// AllowLocalhostOnly is false (default)
+
+	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+	require.NoError(t, err)
+
+	policyStr := args[2]
+
+	// Proxy outbound rules should be present
+	assert.Contains(t, policyStr, "allow network-outbound",
+		"Proxy branch should allow outbound to proxy ports")
+
+	// Without AllowLocalhostOnly, bind and inbound should NOT be present
+	assert.NotContains(t, policyStr, "allow network-bind",
+		"Proxy without AllowLocalhostOnly should not allow bind")
+	assert.NotContains(t, policyStr, "allow network-inbound",
+		"Proxy without AllowLocalhostOnly should not allow inbound")
+}
+
 func TestSeatbelt_NestedSandboxExecFails(t *testing.T) {
 	t.Parallel()
 
