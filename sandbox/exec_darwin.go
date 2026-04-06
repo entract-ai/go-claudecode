@@ -309,11 +309,17 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 	}
 
-	// Allow direct DNS (UDP port 53) for runtimes that bypass the system
-	// resolver (Java, Bazel). Redundant when AllowNetwork is true.
+	// Allow DNS resolution when network is otherwise restricted.
+	// macOS has multiple DNS paths: mDNSResponder Unix socket (system resolver),
+	// com.apple.dnssd.service Mach service (DNS-SD), and direct UDP port 53
+	// (Java, Go pure-resolver). All three are needed for full compatibility.
 	if policy.AllowDNS && !policy.AllowNetwork {
 		policyBuilder.WriteString("(allow network-outbound\n")
+		policyBuilder.WriteString("  (literal \"/private/var/run/mDNSResponder\"))\n")
+		policyBuilder.WriteString("(allow network-outbound\n")
 		policyBuilder.WriteString("  (remote udp \"*:53\"))\n")
+		policyBuilder.WriteString("(allow mach-lookup\n")
+		policyBuilder.WriteString("  (global-name \"com.apple.dnssd.service\"))\n")
 	}
 
 	fullPolicy = policyBuilder.String()
