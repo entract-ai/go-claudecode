@@ -156,8 +156,17 @@ type Policy struct {
 	// Command() directly (not Exec()), pass a cancellable context and cancel it
 	// after the command finishes to ensure bridge resources are released.
 	//
-	// Note: If NetworkProxy is set, AllowNetwork and AllowLocalhostOnly are ignored.
+	// Note: If NetworkProxy is set, AllowNetwork is ignored. AllowLocalhostOnly is
+	// still respected — when true, network-bind and network-inbound rules are added
+	// so the sandboxed process can bind localhost sockets while outbound traffic
+	// is still routed through the proxy.
 	NetworkProxy *NetworkProxy
+
+	// AllowDNS allows direct DNS resolution (UDP port 53) even when network
+	// access is restricted by NetworkProxy or AllowLocalhostOnly. Most tools
+	// resolve DNS via the system resolver (Mach IPC on macOS), but some
+	// runtimes (Java, Bazel) use direct UDP queries and fail without this.
+	AllowDNS bool
 
 	// Env specifies additional environment variables to set in the sandboxed process.
 	// These are applied after the base environment from os.Environ() and any
