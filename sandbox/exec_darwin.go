@@ -277,6 +277,18 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("  (remote ip \"localhost:%s\"))\n", httpPort))
 		policyBuilder.WriteString("(allow network-outbound\n")
 		policyBuilder.WriteString(fmt.Sprintf("  (remote ip \"localhost:%s\"))\n", socksPort))
+
+		// Allow full localhost networking when AllowLocalhostOnly is set alongside proxy.
+		// Dev servers and test databases need bind + inbound + outbound on localhost;
+		// without outbound, a process that binds a port can't connect back to itself.
+		if policy.AllowLocalhostOnly {
+			policyBuilder.WriteString("(allow network-outbound\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+			policyBuilder.WriteString("(allow network-bind\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+			policyBuilder.WriteString("(allow network-inbound\n")
+			policyBuilder.WriteString("  (local ip \"*:*\"))\n")
+		}
 	} else if policy.AllowNetwork {
 		// Full network access (includes localhost and internet)
 		policyBuilder.WriteString("(allow network-outbound)\n")
