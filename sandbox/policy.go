@@ -162,6 +162,12 @@ type Policy struct {
 	// is still routed through the proxy.
 	NetworkProxy *NetworkProxy
 
+	// AllowDNS allows direct DNS resolution (UDP port 53) even when network
+	// access is restricted by NetworkProxy or AllowLocalhostOnly. Most tools
+	// resolve DNS via the system resolver (Mach IPC on macOS), but some
+	// runtimes (Java, Bazel) use direct UDP queries and fail without this.
+	AllowDNS bool
+
 	// Env specifies additional environment variables to set in the sandboxed process.
 	// These are applied after the base environment from os.Environ() and any
 	// sandbox-generated variables (like TMPDIR). If a variable appears in both

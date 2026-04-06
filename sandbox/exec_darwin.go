@@ -308,7 +308,13 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString("(allow network-inbound\n")
 		policyBuilder.WriteString("  (local ip \"*:*\"))\n")
 	}
-	// If all are false/nil, no network rules are added (network is blocked)
+
+	// Allow direct DNS (UDP port 53) for runtimes that bypass the system
+	// resolver (Java, Bazel). Redundant when AllowNetwork is true.
+	if policy.AllowDNS && !policy.AllowNetwork {
+		policyBuilder.WriteString("(allow network-outbound\n")
+		policyBuilder.WriteString("  (remote udp \"*:53\"))\n")
+	}
 
 	fullPolicy = policyBuilder.String()
 
