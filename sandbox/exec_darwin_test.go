@@ -293,6 +293,8 @@ func TestSeatbeltArgs_ProxyWithAllowLocalhostOnly(t *testing.T) {
 
 	assert.Contains(t, policyStr, "allow network-outbound",
 		"proxy branch should allow outbound to proxy ports")
+	assert.Contains(t, policyStr, `(local ip "*:*")`,
+		"proxy + AllowLocalhostOnly should allow localhost outbound (IPv4+IPv6)")
 	assert.Contains(t, policyStr, "allow network-bind",
 		"proxy + AllowLocalhostOnly should allow network bind")
 	assert.Contains(t, policyStr, "allow network-inbound",
