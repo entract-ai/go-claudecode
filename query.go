@@ -5,8 +5,37 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
+
+// describeResult renders a ResultMessage into a human-readable error string
+// for use when the CLI exits before responding to a control request. It tries
+// each of the ResultMessage fields that may carry error detail (Errors list,
+// Result text, Subtype, StopReason) and joins whatever is non-empty, so the
+// caller gets the most-specific information the CLI emitted.
+func describeResult(r *ResultMessage) string {
+	var parts []string
+	if len(r.Errors) > 0 {
+		parts = append(parts, strings.Join(r.Errors, "; "))
+	}
+	if r.Result != "" {
+		parts = append(parts, r.Result)
+	}
+	if r.Subtype != "" {
+		parts = append(parts, "subtype="+r.Subtype)
+	}
+	if r.StopReason != nil && *r.StopReason != "" {
+		parts = append(parts, "stop_reason="+*r.StopReason)
+	}
+	if len(parts) == 0 {
+		if r.IsError {
+			return "is_error=true but no detail fields populated"
+		}
+		return "terminal result received with no error detail"
+	}
+	return strings.Join(parts, " | ")
+}
 
 // Query performs a one-shot query with a string prompt.
 // Internally delegates to QueryWithInput using the streaming control protocol,
@@ -118,20 +147,11 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 			// initialize handshake) wake up as soon as the reader drains,
 			// instead of hanging until DefaultInitializeTimeout.
 			defer func() {
-				var abortErr error
-				switch {
-				case lastResult != nil && lastResult.IsError:
-					msg := lastResult.Result
-					if msg == "" {
-						msg = "unknown error"
-					}
-					abortErr = fmt.Errorf("cli exited before control response: %s", msg)
-				case lastResult != nil:
-					abortErr = errors.New("cli exited before control response (terminal result received)")
-				default:
-					abortErr = errors.New("cli exited before control response")
+				if lastResult == nil {
+					router.AbortPending(errors.New("cli exited before control response"))
+					return
 				}
-				router.AbortPending(abortErr)
+				router.AbortPending(fmt.Errorf("cli exited before control response: %s", describeResult(lastResult)))
 			}()
 
 			for msg := range msgCh {
