@@ -47,6 +47,11 @@ type ControlRouter struct {
 	// Initialization state
 	initialized          bool
 	initializationResult map[string]any
+
+	// closed is set by AbortPending when the transport reader has exited.
+	// Subsequent sendControlRequest calls return it immediately instead of
+	// waiting for the full timeout.
+	closed bool
 }
 
 type controlResult struct {
@@ -595,12 +600,41 @@ func (r *ControlRouter) sendControlResponse(ctx context.Context, requestID strin
 	return r.transport.Write(ctx, string(data)+"\n")
 }
 
+// AbortPending wakes any in-flight sendControlRequest callers with err, and
+// marks the router closed so subsequent sendControlRequest calls return err
+// immediately instead of waiting for the full timeout. Intended to be called
+// from the message-routing goroutine when the CLI's stdout closes (process
+// exit, crash, or early exit with only a result message), so that the SDK
+// fails fast with the real CLI error instead of timing out after 60s.
+func (r *ControlRouter) AbortPending(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	r.closed = true
+	for id, ch := range r.pendingResponses {
+		// Channels are buffered size 1, so this send is non-blocking.
+		select {
+		case ch <- controlResult{err: err}:
+		default:
+		}
+		delete(r.pendingResponses, id)
+	}
+}
+
 // sendControlRequest sends a control request and waits for the response.
 func (r *ControlRouter) sendControlRequest(ctx context.Context, request map[string]any, timeout time.Duration) (map[string]any, error) {
 	requestID := r.nextRequestID()
 
 	ch := make(chan controlResult, 1)
-	r.registerPendingResponse(requestID, ch)
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("control request %s: router closed", request["subtype"])
+	}
+	r.pendingResponses[requestID] = ch
+	r.mu.Unlock()
 	defer r.deletePendingResponse(requestID)
 
 	controlRequest := map[string]any{
@@ -758,12 +792,6 @@ func (r *ControlRouter) popPendingResponse(id string) (chan controlResult, bool)
 		delete(r.pendingResponses, id)
 	}
 	return ch, ok
-}
-
-func (r *ControlRouter) registerPendingResponse(id string, ch chan controlResult) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pendingResponses[id] = ch
 }
 
 func (r *ControlRouter) deletePendingResponse(id string) {

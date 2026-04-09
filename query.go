@@ -108,6 +108,32 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 			defer close(routedCh)
 			defer close(readerDone)
 
+			// Track the last result message we saw so we can surface its
+			// error text if the CLI exits before a pending control request
+			// gets a response (e.g. a startup error that Claude Code emits
+			// as a single `result` message before closing stdout).
+			var lastResult *ResultMessage
+
+			// Ensure any in-flight control requests (most importantly the
+			// initialize handshake) wake up as soon as the reader drains,
+			// instead of hanging until DefaultInitializeTimeout.
+			defer func() {
+				var abortErr error
+				switch {
+				case lastResult != nil && lastResult.IsError:
+					msg := lastResult.Result
+					if msg == "" {
+						msg = "unknown error"
+					}
+					abortErr = fmt.Errorf("cli exited before control response: %s", msg)
+				case lastResult != nil:
+					abortErr = errors.New("cli exited before control response (terminal result received)")
+				default:
+					abortErr = errors.New("cli exited before control response")
+				}
+				router.AbortPending(abortErr)
+			}()
+
 			for msg := range msgCh {
 				if msg.Err != nil {
 					routedCh <- msg
@@ -124,8 +150,10 @@ func QueryWithInput(ctx context.Context, input <-chan InputMessage, opts ...Opti
 					continue
 				}
 
-				// Track first result
-				if _, ok := msg.Message.(*ResultMessage); ok {
+				// Track first result and remember the latest one for
+				// AbortPending's error propagation.
+				if rm, ok := msg.Message.(*ResultMessage); ok {
+					lastResult = rm
 					firstResultOnce.Do(func() {
 						close(firstResultReceived)
 					})
