@@ -325,10 +325,12 @@ func TestSeatbeltArgs_ProxyWithoutAllowLocalhostOnly(t *testing.T) {
 
 	assert.Contains(t, policyStr, "allow network-outbound",
 		"proxy branch should allow outbound to proxy ports")
-	assert.NotContains(t, policyStr, "allow network-bind",
-		"proxy without AllowLocalhostOnly should not allow bind")
-	assert.NotContains(t, policyStr, "allow network-inbound",
-		"proxy without AllowLocalhostOnly should not allow inbound")
+	// AF_UNIX bind/outbound is unconditionally allowed by the base policy, so
+	// pin these assertions to the IP-socket form that the proxy branch gates.
+	assert.NotContains(t, policyStr, "allow network-bind\n  (local ip",
+		"proxy without AllowLocalhostOnly should not allow IP bind")
+	assert.NotContains(t, policyStr, "allow network-inbound\n  (local ip",
+		"proxy without AllowLocalhostOnly should not allow IP inbound")
 }
 
 func TestSeatbelt_NestedSandboxExecFails(t *testing.T) {
