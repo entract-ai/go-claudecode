@@ -258,10 +258,11 @@ func seatbeltArgs(policy *Policy, name string, argv []string) ([]string, string,
 		policyBuilder.WriteString(fmt.Sprintf("(deny file-write-unlink\n  (literal (param \"DENY_ANCESTOR_%d\"))\n  (with message \"%s-ancestor\"))\n", i, logTag))
 	}
 
-	// Conditionally allow com.apple.trustd.agent for Go TLS certificate verification.
+	// System services use trustd; interactive sessions use trustd.agent.
 	// This is an explicit opt-in because it opens a potential data exfiltration vector.
 	if policy.EnableWeakerNetworkIsolation {
-		policyBuilder.WriteString("; trustd.agent - needed for Go TLS certificate verification (weaker network isolation)\n")
+		policyBuilder.WriteString("; trustd - needed for Go TLS certificate verification (weaker network isolation)\n")
+		policyBuilder.WriteString("(allow mach-lookup (global-name \"com.apple.trustd\"))\n")
 		policyBuilder.WriteString("(allow mach-lookup (global-name \"com.apple.trustd.agent\"))\n")
 	}
 

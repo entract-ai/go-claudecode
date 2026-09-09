@@ -232,10 +232,10 @@ type Policy struct {
 	// Ignored on macOS (Seatbelt doesn't mount /proc).
 	EnableWeakerNestedSandbox bool
 
-	// EnableWeakerNetworkIsolation, when true, allows access to com.apple.trustd.agent
-	// in the macOS Seatbelt profile. This is needed for Go programs (gh, gcloud,
-	// terraform, kubectl, etc.) to verify TLS certificates when using the network proxy.
-	// The default (false) blocks trustd.agent access for stronger isolation.
+	// EnableWeakerNetworkIsolation, when true, allows access to com.apple.trustd
+	// and com.apple.trustd.agent in the macOS Seatbelt profile. Go programs (gh,
+	// terraform, kubectl, etc.) need these services to verify TLS certificates.
+	// The default (false) blocks both services for stronger isolation.
 	//
 	// WARNING: Enabling this opens a potential data exfiltration vector through
 	// the trustd service. Only enable if you need Go TLS verification in the sandbox.
