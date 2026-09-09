@@ -32,31 +32,30 @@ func TestSeatbeltPolicy_NoTrustdAgentByDefault(t *testing.T) {
 		"Seatbelt base policy must not have an allow rule for trustd.agent")
 }
 
-func TestSeatbeltArgs_TrustdAgentConditional(t *testing.T) {
+func TestSeatbeltArgs_TrustdConditional(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
+	for _, tt := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "blocked by default"},
+		{name: "system and user trust with opt-in", enabled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := DefaultPolicy()
+			policy.WorkDir = t.TempDir()
+			policy.EnableWeakerNetworkIsolation = tt.enabled
+			args, cleanupDir, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.RemoveAll(cleanupDir) })
 
-	// Default: no trustd.agent
-	policy := DefaultPolicy()
-	policy.WorkDir = tmpDir
-	args, _, _, err := seatbeltArgs(policy, "echo", []string{"echo", "hello"})
-	require.NoError(t, err)
-
-	policyStr := args[2] // seatbeltPath, "-p", <policy string>
-	assert.NotContains(t, policyStr, `(allow mach-lookup (global-name "com.apple.trustd.agent"))`,
-		"Default policy should not have an allow rule for trustd.agent")
-
-	// With EnableWeakerNetworkIsolation: should include trustd.agent
-	policy2 := DefaultPolicy()
-	policy2.WorkDir = tmpDir
-	policy2.EnableWeakerNetworkIsolation = true
-	args2, _, _, err := seatbeltArgs(policy2, "echo", []string{"echo", "hello"})
-	require.NoError(t, err)
-
-	policyStr2 := args2[2]
-	assert.Contains(t, policyStr2, "com.apple.trustd.agent",
-		"Policy with EnableWeakerNetworkIsolation should include trustd.agent")
+			for _, service := range []string{"com.apple.trustd", "com.apple.trustd.agent"} {
+				rule := `(allow mach-lookup (global-name "` + service + `"))`
+				assert.Equal(t, tt.enabled, strings.Contains(args[2], rule), service)
+			}
+		})
+	}
 }
 
 func TestSeatbeltArgs_DenyWritePaths(t *testing.T) {
